@@ -40,8 +40,11 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL is not set")
 
-engine = create_engine(DATABASE_URL)
-
+engine = create_engine(
+    DATABASE_URL,
+    pool_pre_ping=True,   # 🔥 VERY IMPORTANT (fixes SSL closed error)
+    pool_recycle=300      # prevents stale connections
+)
 SessionLocal = sessionmaker(
     autocommit=False,
     autoflush=False,
