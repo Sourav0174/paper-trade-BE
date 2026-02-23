@@ -11,6 +11,34 @@ from typing import Optional
 
 load_dotenv()
 
+ACCESS_TOKEN_EXPIRE_MINUTES = 60
+VERIFY_TOKEN_EXPIRE_HOURS = 24
+
+
+def create_access_token(user_id: str):
+    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+
+    payload = {
+        "sub": user_id,
+        "type": "access",
+        "exp": expire
+    }
+
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_verification_token(email: str):
+    expire = datetime.utcnow() + timedelta(hours=VERIFY_TOKEN_EXPIRE_HOURS)
+
+    payload = {
+        "sub": email,
+        "type": "verify",
+        "exp": expire
+    }
+
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
 # SECRET_KEY = "supersecretkey"
 SECRET_KEY: str = os.environ["SECRET_KEY"]
 
@@ -31,17 +59,21 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
 
-def verify_token(token: str) -> Optional[str]:
-    
+def verify_token(token: str, expected_type: str) -> Optional[str]:
     try:
-        
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        user_id = payload.get("sub")
 
-        if not isinstance(user_id, str):
+        token_type = payload.get("type")
+        subject = payload.get("sub")
+
+        if token_type != expected_type:
             return None
 
-        return user_id
+        if not isinstance(subject, str):
+            return None
+
+        return subject
+
     except JWTError:
         return None
 
@@ -57,8 +89,6 @@ def verify_password(plain_password: str, hashed_password: str):
 
 
 
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+
