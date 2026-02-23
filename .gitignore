@@ -1,4 +1,25 @@
-venv/
-.env
+# Python
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.db
+*.sqlite3
+
+# Virtual Environment
+venv/
+.env
+.venv/
+
+# Environment variables
+.env.*
+
+# Alembic
+alembic/versions/*.pyc
+
+# IDE
+.vscode/
+.idea/
+
+# Mac
+.DS_Store
