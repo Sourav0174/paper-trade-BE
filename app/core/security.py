@@ -62,11 +62,13 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 def verify_token(token: str, expected_type: str) -> Optional[str]:
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        print("✅ PAYLOAD:", payload)
 
         token_type = payload.get("type")
         subject = payload.get("sub")
 
         if token_type != expected_type:
+            print("❌ TYPE MISMATCH:", token_type, expected_type)
             return None
 
         if not isinstance(subject, str):
@@ -74,9 +76,10 @@ def verify_token(token: str, expected_type: str) -> Optional[str]:
 
         return subject
 
-    except JWTError:
+    except JWTError as e:
+        print("🔥 JWT ERROR:", str(e))
         return None
-
+    
 
 
 def hash_password(password: str):

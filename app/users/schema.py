@@ -34,13 +34,3 @@ class UserResponse(BaseModel):
     class Config:
         from_attributes = True  # IMPORTANT for SQLAlchemy
 
-# class UserResponse(BaseModel):
-#     id: int
-#     name: str
-#     gender: str
-#     email: EmailStr
-#     is_subscribed: bool
-#     created_at: datetime
-
-#     class Config:
-#         from_attributes = True

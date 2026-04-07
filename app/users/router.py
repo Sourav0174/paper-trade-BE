@@ -94,13 +94,13 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 
 @router.post("/login")
 def login(
-    form_data: OAuth2PasswordRequestForm = Depends(),
+    data: schema.UserLogin,   # ✅ simple JSON body
     db: Session = Depends(get_db)
 ):
     user = service.authenticate_user(
         db,
-        form_data.username,
-        form_data.password
+        data.email,
+        data.password
     )
 
     if not user:
@@ -108,7 +108,6 @@ def login(
 
     token = create_access_token(str(user.id))
 
-     
     return {
         "access_token": token,
         "token_type": "bearer",
