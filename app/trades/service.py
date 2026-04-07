@@ -95,7 +95,7 @@ class TradeService:
                     "current_price": round(current_price, 2),
                     "pnl_value": round(pnl_value, 2),
                     "pnl_percent": round(pnl_percent, 2),
-                    "current_value": current_value
+                    "current_value": round(current_value, 2)
                 })
 
             # 🔹 Calculate weight
@@ -105,7 +105,7 @@ class TradeService:
                 else:
                     item["weight"] = 0
 
-                del item["current_value"]  # remove extra field
+                
 
             return result
 
