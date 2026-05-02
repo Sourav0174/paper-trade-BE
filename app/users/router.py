@@ -1,12 +1,14 @@
 
+from datetime import datetime
+
 from sqlalchemy.orm import Session
 from starlette import status
-from app.core.security import create_access_token, verify_token
+from app.core.security import create_access_token, reset_password, verify_token
 from app.database import get_db
 from app.users import service, schema
-from app.users.models import User
-from fastapi import APIRouter, Depends, HTTPException, Query
-from app.users.service import get_current_user
+from app.users.models import SubscriptionEnum, User
+from fastapi import APIRouter, Depends, HTTPException, Query, BackgroundTasks
+from app.users.service import forgot_password, get_current_user
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
@@ -20,7 +22,7 @@ def get_me(current_user = Depends(get_current_user)):
 
 
 @router.post("/signup")
-def signup(user: schema.UserCreate, db: Session = Depends(get_db)):
+def signup(user: schema.UserCreate, db: Session = Depends(get_db),):
 
     existing = db.query(User).filter(User.email == user.email).first()
     if existing:
@@ -58,11 +60,15 @@ def signup(user: schema.UserCreate, db: Session = Depends(get_db)):
 @router.get("/verify-email", response_class=HTMLResponse)
 def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 
-    print("Received token:", token)
+    
 
 
-    # 🔐 Decode token and ensure it's verification type
-    email = verify_token(token, expected_type="verify")
+    payload = verify_token(token, expected_type="verify")
+
+    if not payload:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    email = payload.get("sub")
 
 
     if not email:
@@ -81,6 +87,7 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 
     # ✅ Mark as verified
     setattr(user, "is_verified", True)
+ 
 
     db.commit()
 
@@ -116,6 +123,15 @@ def login(
             "name": user.name,
             "gender": user.gender,
             "email": user.email,
-            "is_subscribed": user.subscription
+            "is_subscribed": user.subscription != SubscriptionEnum.FREE
         }
     }
+
+@router.post("/forgot-password")
+def forgot_password_route(payload: schema.EmailRequest, db: Session = Depends(get_db)):
+    return forgot_password(db, payload.email)
+
+
+@router.post("/reset-password")
+def reset_password_route(payload: schema.ResetPasswordRequest, db: Session = Depends(get_db)):
+    return reset_password(db, payload.token, payload.new_password)

@@ -47,3 +47,8 @@ class User(Base):
         onupdate=func.now(),
         nullable=False
     )
+
+    password_updated_at = Column(
+    DateTime(timezone=True),
+    nullable=True
+)
