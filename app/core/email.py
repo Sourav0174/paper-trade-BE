@@ -21,8 +21,8 @@ FROM_EMAIL: str = get_env("FROM_EMAIL")
 APP_BASE_URL: str = get_env("APP_BASE_URL")
 
 
-print("SMTP_USER =>", SMTP_USER)
-print("SMTP_PASS =>", SMTP_PASS)
+# print("SMTP_USER =>", SMTP_USER)
+# print("SMTP_PASS =>", SMTP_PASS)
 
 
 
@@ -73,3 +73,37 @@ This link expires in 24 hours.
     except Exception as e:
         print("Email sending failed:", e)
         raise
+
+def send_password_reset_email(to_email: str, token: str):
+    # reset_link = f"{APP_BASE_URL}/reset-password?token={token}"
+    reset_link = f"papertrade://reset-password?token={token}"
+
+    msg = EmailMessage()
+    msg["Subject"] = "Reset Your Password"
+    msg["From"] = f"Paper Trade <{FROM_EMAIL}>"
+    msg["To"] = to_email
+
+    msg.set_content(f"""
+Reset your password using this link:
+
+{reset_link}
+
+This link expires in 15 minutes.
+""")
+
+    msg.add_alternative(f"""
+<html>
+  <body>
+    <h3>Reset Your Password</h3>
+    <a href="{reset_link}" 
+       style="padding:10px 10px;background:#f44336;color:white;text-decoration:none;">
+       Reset Password
+    </a>
+  </body>
+</html>
+""", subtype="html")
+
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+        server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.send_message(msg)
