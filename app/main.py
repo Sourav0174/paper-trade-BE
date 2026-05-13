@@ -7,6 +7,7 @@ from app.users.router import router as user_router
 from app.market.router import router as market_router
 from app.stocks.router import router as stocks_router
 from app.trades.router import router as trade_router
+from app.subscriptions.router import router as subscription_router
 
 
 
@@ -21,6 +22,7 @@ app.include_router(user_router, prefix="/users", tags=["Users"])
 app.include_router(trade_router)
 app.include_router(market_router)
 app.include_router(stocks_router)
+app.include_router(subscription_router)
 
 @app.get("/")
 def root():
