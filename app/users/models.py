@@ -1,6 +1,7 @@
 from sqlalchemy import Column, Integer, String, Enum, DateTime, Boolean
 from sqlalchemy.sql import func
 import enum
+
 from app.database import Base
 
 
@@ -27,13 +28,48 @@ class User(Base):
     password = Column(String, nullable=False)
 
     is_verified = Column(Boolean, default=False, nullable=False)
-    email_verified_at = Column(DateTime(timezone=True), nullable=True)
+
+    email_verified_at = Column(
+        DateTime(timezone=True),
+        nullable=True
+    )
 
     subscription = Column(
         Enum(SubscriptionEnum),
         default=SubscriptionEnum.FREE,
         nullable=False
     )
+
+    # -----------------------------
+    # SUBSCRIPTION RELATED FIELDS
+    # -----------------------------
+
+    subscription_product_id = Column(
+        String,
+        nullable=True
+    )
+
+    purchase_token = Column(
+        String,
+        nullable=True
+    )
+
+    subscription_platform = Column(
+        String,
+        nullable=True
+    )
+
+    subscription_expiry = Column(
+        DateTime(timezone=True),
+        nullable=True
+    )
+
+    auto_renewing = Column(
+        Boolean,
+        default=False
+    )
+
+    # -----------------------------
 
     created_at = Column(
         DateTime(timezone=True),
@@ -49,6 +85,6 @@ class User(Base):
     )
 
     password_updated_at = Column(
-    DateTime(timezone=True),
-    nullable=True
-)
+        DateTime(timezone=True),
+        nullable=True
+    )
