@@ -8,7 +8,8 @@ from app.market.router import router as market_router
 from app.stocks.router import router as stocks_router
 from app.trades.router import router as trade_router
 from app.subscriptions.router import router as subscription_router
-
+from app.chart.router import router as chart_router
+from app.phone_auth.router import router as phone_auth_router
 
 
 User.metadata.create_all(bind=engine)
@@ -23,7 +24,9 @@ app.include_router(trade_router)
 app.include_router(market_router)
 app.include_router(stocks_router)
 app.include_router(subscription_router)
+app.include_router(chart_router)
+app.include_router(phone_auth_router)
 
 @app.get("/")
 def root():
-    return {"message": "PaperTrade Backend Running 🚀"}
+    return {"message": "PaperTrade Backend Running!"}

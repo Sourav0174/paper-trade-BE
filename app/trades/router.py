@@ -24,6 +24,16 @@ def get_holdings(
 ):
     return trade_service.get_holdings(db, current_user.id)
 
+@router.get("/portfolio")
+def get_portfolio(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return trade_service.get_portfolio(
+        db,
+        current_user.id
+    )
+
 
 @router.get("/")
 def get_trades(
