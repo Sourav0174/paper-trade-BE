@@ -12,7 +12,7 @@ from app.users.service import forgot_password, get_current_user
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-
+   
 router = APIRouter()
 
 @router.get("/me")

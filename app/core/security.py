@@ -11,7 +11,7 @@ from typing import Optional
 
 load_dotenv()
 
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 VERIFY_TOKEN_EXPIRE_HOURS = 24
 
 
@@ -21,7 +21,8 @@ def create_access_token(user_id: str):
     payload = {
         "sub": user_id,
         "type": "access",
-        "exp": expire
+        "exp": int(expire.timestamp()),
+        # "exp": expire
     }
 
     return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
@@ -42,7 +43,8 @@ def create_verification_token(
     payload = {
         "sub": email,
         "type": token_type,
-        "exp": expire,
+         "exp": int(expire.timestamp()),
+        # "exp": expire,
         # ✅ FIX: store timestamp instead of string
         "pwd_at": int(password_updated_at.timestamp()) if password_updated_at else 0
     }
@@ -63,47 +65,35 @@ if SECRET_KEY is None:
 
   # later move to .env
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def verify_token(token: str, expected_type: str) -> Optional[dict]:
+
+
+def verify_token(token: str, expected_type: str):
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            SECRET_KEY,
+            algorithms=[ALGORITHM]
+        )
+
+        print("PAYLOAD:", payload)
 
         if payload.get("type") != expected_type:
+            print("TYPE MISMATCH")
             return None
 
         return payload
 
-    except JWTError:
+    except JWTError as e:
+        print("JWT ERROR:", str(e))
         return None
 
 
 
-# def verify_token(token: str, expected_type: str) -> Optional[str]:
-#     try:
-#         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-#         print("✅ PAYLOAD:", payload)
-
-#         token_type = payload.get("type")
-#         subject = payload.get("sub")
-
-#         if token_type != expected_type:
-#             print("❌ TYPE MISMATCH:", token_type, expected_type)
-#             return None
-
-#         if not isinstance(subject, str):
-#             return None
-
-#         return subject
-
-#     except JWTError as e:
-#         print("🔥 JWT ERROR:", str(e))
-#         return None
-    
 
 
 def hash_password(password: str):

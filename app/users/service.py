@@ -13,7 +13,7 @@ from app.core.security import create_verification_token
 from app.core.email import send_password_reset_email, send_verification_email
 
 
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
 
 
