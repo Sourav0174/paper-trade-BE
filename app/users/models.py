@@ -25,7 +25,20 @@ class User(Base):
     email = Column(String, unique=True, index=True, nullable=False)
     name = Column(String, nullable=False)
     gender = Column(Enum(GenderEnum), nullable=True)
-    password = Column(String, nullable=False)
+    password = Column(String, nullable=True)
+
+    provider = Column(
+
+        String,
+        nullable=False,
+        default="email"
+        )
+
+    google_id = Column(
+        String,
+        nullable=True,
+        unique=True
+        )
 
     is_verified = Column(Boolean, default=False, nullable=False)
 
