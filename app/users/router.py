@@ -3,7 +3,12 @@ from datetime import datetime
 
 from sqlalchemy.orm import Session
 from starlette import status
-from app.core.security import create_access_token, reset_password, verify_token
+from app.core.security import (
+    create_access_token,
+    reset_password,
+    verify_token,
+    verify_password,
+)
 from app.database import get_db
 from app.users import service, schema
 from app.users.models import SubscriptionEnum, User
@@ -98,6 +103,16 @@ def verify_email(token: str = Query(...), db: Session = Depends(get_db)):
 
 
 
+@router.post("/google-login")
+def google_login_route(
+    payload: schema.GoogleLoginRequest,
+    db: Session = Depends(get_db)
+):
+    return service.google_login(
+        db,
+        payload.id_token
+    )
+
 
 @router.post("/login")
 def login(
@@ -135,3 +150,16 @@ def forgot_password_route(payload: schema.EmailRequest, db: Session = Depends(ge
 @router.post("/reset-password")
 def reset_password_route(payload: schema.ResetPasswordRequest, db: Session = Depends(get_db)):
     return reset_password(db, payload.token, payload.new_password)
+
+@router.delete("/delete-account")
+def delete_account(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    db.delete(current_user)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Account deleted successfully"
+    }

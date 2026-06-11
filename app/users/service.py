@@ -1,4 +1,5 @@
-from datetime import datetime
+from datetime import datetime, timezone
+import os
 
 from sqlalchemy.orm import Session
 from app.users.models import SubscriptionEnum, User
@@ -12,11 +13,76 @@ from app.core.security import verify_token
 from app.core.security import create_verification_token
 from app.core.email import send_password_reset_email, send_verification_email
 
+from google.oauth2 import id_token
+from google.auth.transport import requests
+
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
+GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 
 
+def google_login(
+    db: Session,
+    google_token: str,
+):
+    try:
+        info = id_token.verify_oauth2_token(
+        google_token,
+        requests.Request(),
+        GOOGLE_CLIENT_ID
+        )
+
+        google_id = info["sub"]
+        email = info["email"]
+        name = info.get("name", "Google User")
+
+    except Exception:
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid Google token"
+        )
+
+    # 👇 CHECK IF USER ALREADY EXISTS
+    user = db.query(User).filter(
+        User.email == email
+    ).first()
+
+    if user and not user.google_id: # type: ignore
+        user.google_id = google_id
+        user.provider = "google" # type: ignore
+        db.commit()
+        db.refresh(user)
+
+    # 👇 CREATE ONLY IF NOT FOUND
+    if not user:
+        user = User(
+            email=email,
+            name=name,
+            password=None,
+            provider="google",
+            google_id=google_id,
+            is_verified=True,
+            subscription=SubscriptionEnum.FREE
+        )
+
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+    # 👇 GENERATE YOUR EXISTING JWT
+    token = create_access_token(str(user.id))
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "is_subscribed": user.subscription != SubscriptionEnum.FREE
+            }
+        }
 
 def get_current_user(
     token: str = Depends(oauth2_scheme), 
@@ -74,12 +140,21 @@ def authenticate_user(db: Session, email: str, password: str):
     if not user:
         return None
 
+    # Google account
+    if user.provider == "google": # type: ignore
+        raise HTTPException(
+            status_code=400,
+            detail="Please continue with Google"
+        )
+
     if not verify_password(password, user.password): # type: ignore
         return None
 
     if user.is_verified is not True:
-
-        raise HTTPException(status_code=403, detail="Email not verified")
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified"
+        )
 
     return user
 
@@ -99,7 +174,7 @@ def login_user(db: Session, email: str, password: str):
 
 
 
-from datetime import datetime, timezone
+
 
 def forgot_password(db: Session, email: str):
     user = db.query(User).filter(User.email == email).first()
@@ -118,3 +193,20 @@ def forgot_password(db: Session, email: str):
     send_password_reset_email(email, token)
 
     return {"message": "If this email exists, reset link sent"}
+
+def delete_user(db: Session, user_id: int):
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
+
+    db.delete(user)
+    db.commit()
+
+    return {
+        "success": True,
+        "message": "Account deleted successfully"
+    }

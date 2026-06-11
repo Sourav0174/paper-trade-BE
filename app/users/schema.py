@@ -72,3 +72,9 @@ class ResetPasswordRequest(BaseModel):
             raise ValueError("Must include a number")
 
         return v
+    
+
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: str
