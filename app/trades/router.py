@@ -34,6 +34,16 @@ def get_portfolio(
         current_user.id
     )
 
+@router.post("/reset")
+def reset_portfolio(
+    db: Session = Depends(get_db),
+    current_user = Depends(get_current_user)
+):
+    return trade_service.reset_portfolio(
+        db,
+        current_user.id
+    )
+
 
 @router.get("/")
 def get_trades(

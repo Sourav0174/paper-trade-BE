@@ -337,4 +337,57 @@ class TradeService:
             )
         }
 
+
+    def reset_portfolio(self, db: Session, user_id: int):
+
+        try:
+
+            # Delete trades
+            # db.query(Trade).filter(
+            #     Trade.user_id == user_id
+            # ).delete()
+
+            # Delete holdings
+            db.query(Holding).filter(
+                Holding.user_id == user_id
+            ).delete()
+
+            # Reset portfolio
+            portfolio = db.query(Portfolio).filter(
+                Portfolio.user_id == user_id
+            ).first()
+
+            if portfolio:
+
+                portfolio.total_balance = 100000.0
+                portfolio.available_balance = 100000.0
+                portfolio.invested_amount = 0.0
+                portfolio.realized_pnl = 0.0
+
+            else:
+
+                portfolio = Portfolio(
+                    user_id=user_id,
+                    total_balance=100000.0,
+                    available_balance=100000.0,
+                    invested_amount=0.0,
+                    realized_pnl=0.0
+                )
+
+                db.add(portfolio)
+
+            db.commit()
+
+            return {
+                "message": "Portfolio reset successfully"
+            }
+
+        except Exception as e:
+
+            db.rollback()
+
+            raise HTTPException(
+                status_code=500,
+                detail=str(e)
+            )
 trade_service = TradeService()
