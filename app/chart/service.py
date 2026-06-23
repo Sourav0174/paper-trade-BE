@@ -12,6 +12,8 @@ class ChartService:
         symbol: str,
         timeframe: str,
     ):
+        
+        
 
         # Convert frontend symbol to provider symbol
         provider_symbol = SYMBOL_MAP.get(symbol.upper(), symbol)
@@ -51,13 +53,37 @@ class ChartService:
                     "close": round(float(row["Close"]), 2),
                 })
 
-          
-            return {
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "candles": candles[-300:]
-            }
+            candles = candles[-300:]
 
+            if len(candles) >= 2:
+                latest = candles[-1]
+                previous = candles[-2]
+
+                ltp = round(latest["close"], 2)
+
+                change = round(
+                    latest["close"] - previous["close"],
+                    2,
+                )
+
+                change_percent = (
+                    round((change / previous["close"]) * 100, 2)
+                    if previous["close"] > 0
+                    else 0
+                )
+            else:
+                ltp = candles[-1]["close"] if candles else 0
+                change = 0
+                change_percent = 0
+
+            return {
+                "symbol": symbol.upper(),
+                "timeframe": timeframe,
+                "ltp": ltp,
+                "change": change,
+                "change_percent": change_percent,
+                "candles": candles,
+            }
         except HTTPException:
             raise
 
