@@ -13,4 +13,9 @@ class CandleSchema(BaseModel):
 class ChartResponseSchema(BaseModel):
     symbol: str
     timeframe: str
+
+    ltp: float
+    change: float
+    change_percent: float
+
     candles: List[CandleSchema]
