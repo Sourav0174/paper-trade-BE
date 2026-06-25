@@ -22,3 +22,15 @@ async def get_chart(
         symbol=symbol,
         timeframe=timeframe,
     ) 
+
+@router.get("/price/{symbol}")
+async def get_price(symbol: str):
+
+    price = await chart_service.get_live_price(
+        symbol
+    )
+
+    return {
+        "symbol": symbol,
+        "price": price,
+    }

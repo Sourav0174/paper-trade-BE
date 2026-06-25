@@ -1,6 +1,6 @@
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-
+from app.chart.service import chart_service
 from app.trades.models import Holding, Portfolio, Trade
 from app.trades.schema import TradeType
 
@@ -163,7 +163,7 @@ class TradeService:
     # ====================================
     # 🔹 GET HOLDINGS
     # ====================================
-    def get_holdings(self, db: Session, user_id: int):
+    async def get_holdings(self, db: Session, user_id: int):
 
         holdings = db.query(Holding).filter(
             Holding.user_id == user_id,
@@ -174,11 +174,19 @@ class TradeService:
 
         total_portfolio_value = 0
 
+        
+
         # 🔹 First pass
         for holding in holdings:
 
             # TEMP PRICE
-            current_price = float(holding.avg_price) * 1.1
+            # current_price = float(holding.avg_price) * 1.1
+            current_price = await chart_service.get_live_price(
+                holding.symbol    
+                )
+
+            if current_price is None:
+                current_price = float(holding.avg_price)
 
             current_value = (
                 current_price * holding.quantity
@@ -198,6 +206,8 @@ class TradeService:
                 ) * 100
 
             total_portfolio_value += current_value
+
+            print(holding.symbol, current_price)
 
             result.append({
                 "symbol": holding.symbol,
@@ -226,7 +236,7 @@ class TradeService:
     # ====================================
     # 🔹 GET PORTFOLIO
     # ====================================
-    def get_portfolio(self, db: Session, user_id: int):
+    async def get_portfolio(self, db: Session, user_id: int):
 
         # ================================
         # 🔹 GET PORTFOLIO
@@ -265,9 +275,12 @@ class TradeService:
         for holding in holdings:
 
             # TEMP MARKET PRICE
-            current_price = (
-                float(holding.avg_price) * 1.1
-            )
+            current_price = await chart_service.get_live_price(
+                holding.symbol
+                )
+
+            if current_price is None:
+                current_price = float(holding.avg_price)
 
             current_value += (
                 current_price
