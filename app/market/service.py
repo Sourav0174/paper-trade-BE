@@ -1,5 +1,6 @@
 import os
 import time
+from urllib import response
 import httpx
 
 
@@ -84,6 +85,41 @@ class MarketService:
         self.last_fetched = current_time
 
         return data
+    
+    async def get_stock_price(self, symbol: str):
+
+        try:
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+
+                response = await client.get(
+                    "https://api.twelvedata.com/quote",
+                    params={
+                        "symbol": symbol,
+                        "exchange": "NSE",
+                        "apikey": self.api_key,
+                    },
+                )
+
+                print("Requesting symbol:", symbol)
+                print("Response:", response.text)
+                if response.status_code != 200:
+                    return None
+                
+                print("Requesting symbol:", symbol)
+                print("Response:", response.text)
+
+                data = response.json()
+
+                if data.get("status") == "error":
+                    print("TwelveData Error:", data)
+                    return None
+
+                return float(data.get("close", 0))
+
+        except Exception as e:
+            print("Stock Price Error:", e)
+            return None
 
 
 market_service = MarketService()

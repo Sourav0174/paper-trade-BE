@@ -18,18 +18,21 @@ def create_trade(
 
 
 @router.get("/holdings")
-def get_holdings(
+async def get_holdings(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return trade_service.get_holdings(db, current_user.id)
+    return await trade_service.get_holdings(
+        db,
+        current_user.id
+    )
 
 @router.get("/portfolio")
-def get_portfolio(
+async def get_portfolio(
     db: Session = Depends(get_db),
     current_user = Depends(get_current_user)
 ):
-    return trade_service.get_portfolio(
+    return await trade_service.get_portfolio(
         db,
         current_user.id
     )

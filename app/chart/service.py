@@ -94,6 +94,41 @@ class ChartService:
                 status_code=500,
                 detail="Failed to fetch chart data"
             )
+        
+    def get_provider_symbol(self, symbol: str):
 
+        symbol = symbol.upper()
 
+        if symbol in SYMBOL_MAP:
+            return SYMBOL_MAP[symbol]
+
+        if not symbol.endswith(".NS"):
+            return f"{symbol}.NS"
+
+        return symbol
+        
+    async def get_live_price(self, symbol: str):
+
+        provider_symbol = self.get_provider_symbol(symbol)
+
+        try:
+
+            ticker = yf.Ticker(provider_symbol)
+
+            df = ticker.history(
+                period="1d",
+                interval="5m",
+            )
+
+            if df.empty:
+                return None
+
+            return round(
+                float(df["Close"].iloc[-1]),
+                2,
+            )
+
+        except Exception as e:
+            print("Live Price Error:", e)
+            return None
 chart_service = ChartService()
