@@ -106,6 +106,10 @@ def fetch_multiple_prices(symbols: list[str]) -> Dict[str, Tuple[float, float]]:
             result[symbol] = (0, 0)
     return result
 
+def fetch_single_price(symbol: str):
+    price_map = fetch_multiple_prices([symbol])
+
+    return price_map.get(symbol, (None, 0))[0]
 
 def get_stocks(index: StockFilterEnum, page: int, limit: int, search: str | None = None):
 
