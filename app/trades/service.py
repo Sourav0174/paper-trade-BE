@@ -3,6 +3,7 @@ from sqlalchemy.orm import Session
 from app.chart.service import chart_service
 from app.trades.models import Holding, Portfolio, Trade
 from app.trades.schema import TradeType
+from app.stocks.service import fetch_single_price
 
 
 class TradeService:
@@ -179,9 +180,10 @@ class TradeService:
         # 🔹 First pass
         for holding in holdings:
 
+
             # TEMP PRICE
             # current_price = float(holding.avg_price) * 1.1
-            current_price = await chart_service.get_live_price(
+            current_price = fetch_single_price(
                 holding.symbol    
                 )
 
@@ -190,6 +192,16 @@ class TradeService:
 
             current_value = (
                 current_price * holding.quantity
+            )
+            print(
+
+                f"""
+                Symbol: {holding.symbol}
+                Avg Price: {holding.avg_price}
+                Live Price: {current_price}
+                Quantity: {holding.quantity}
+                PnL: {(current_price - holding.avg_price) * holding.quantity}
+                """
             )
 
             pnl_value = (
