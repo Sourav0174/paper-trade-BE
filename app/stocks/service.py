@@ -40,12 +40,12 @@ def fetch_real_price(symbol: str):
 
         latest = data.iloc[-1]
 
-        value = data["Close"].iloc[-1]
-        open_price = data["Open"].iloc[-1]
+        value = float(data["Close"].iloc[-1])
+        open_price = float(data["Open"].iloc[-1])
 
-        change = round(((value - open_price) / open_price) * 100, 2)
+        change = round(((value-open_price)/open_price)*100,2)
 
-        return value, change
+        return float(value), float(change)
 
     except Exception as e:
         print(f"Error fetching {symbol}: {e}")
@@ -107,10 +107,13 @@ def fetch_multiple_prices(symbols: list[str]) -> Dict[str, Tuple[float, float]]:
     return result
 
 def fetch_single_price(symbol: str):
-    price_map = fetch_multiple_prices([symbol])
+    price, _ = fetch_real_price(symbol)
+    print(f"Fetched price for {price}")
 
-    return price_map.get(symbol, (None, 0))[0]
+    if price <= 0:
+        return None
 
+    return round(float(price), 2)
 def get_stocks(index: StockFilterEnum, page: int, limit: int, search: str | None = None):
 
     # Select group

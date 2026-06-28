@@ -9,8 +9,7 @@ class TradeType(str, Enum):
 
 class TradeCreate(BaseModel):
     symbol: str
-    quantity: int = Field(gt=0)   # must be > 0
-    price: float = Field(gt=0)    # must be > 0
+    quantity: int = Field(gt=0)
     trade_type: TradeType
 
 
