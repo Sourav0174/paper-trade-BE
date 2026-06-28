@@ -4,6 +4,7 @@ from app.chart.service import chart_service
 from app.trades.models import Holding, Portfolio, Trade
 from app.trades.schema import TradeType
 from app.stocks.service import fetch_single_price
+import traceback
 
 
 class TradeService:
@@ -12,130 +13,123 @@ class TradeService:
 
         symbol = data.symbol.upper().strip()
 
+        # ⭐ Server decides execution price
+        live_price = fetch_single_price(symbol)
+
+        if live_price is None or live_price <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Unable to fetch live price."
+            )
+
         try:
 
-            # ================================
-            # 🔹 GET OR CREATE PORTFOLIO
-            # ================================
-            portfolio = db.query(Portfolio).filter(
-                Portfolio.user_id == user_id
-            ).first()
+            portfolio = (
+                db.query(Portfolio)
+                .filter(Portfolio.user_id == user_id)
+                .first()
+            )
 
             if not portfolio:
-                portfolio = Portfolio(
-                    user_id=user_id
-                )
-
+                portfolio = Portfolio(user_id=user_id)
                 db.add(portfolio)
                 db.flush()
 
-            # ================================
-            # 🔹 GET HOLDING
-            # ================================
-            holding = db.query(Holding).filter(
-                Holding.user_id == user_id,
-                Holding.symbol == symbol
-            ).first()
+            holding = (
+                db.query(Holding)
+                .filter(
+                    Holding.user_id == user_id,
+                    Holding.symbol == symbol,
+                )
+                .first()
+            )
 
-            # ================================
-            # 🔹 BUY LOGIC
-            # ================================
             if data.trade_type == TradeType.BUY:
 
-                total_cost = data.quantity * data.price
+                total_cost = live_price * data.quantity
 
-                # 🔹 Check balance
                 if portfolio.available_balance < total_cost:
-                    raise HTTPException(status_code=400,detail="Insufficient balance")
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Insufficient balance",
+                    )
 
-                # 🔹 Create holding if not exists
                 if not holding:
                     holding = Holding(
                         user_id=user_id,
                         symbol=symbol,
                         quantity=0,
-                        avg_price=0.0,
-                        invested_amount=0.0,
-                        realized_pnl=0.0
+                        avg_price=0,
+                        invested_amount=0,
+                        realized_pnl=0,
                     )
-
                     db.add(holding)
 
-                # 🔹 Calculate new average
-                new_quantity = holding.quantity + data.quantity
+                new_qty = holding.quantity + data.quantity
 
-                new_avg_price = (
+                holding.avg_price = (
                     (holding.quantity * holding.avg_price)
                     + total_cost
-                ) / new_quantity
+                ) / new_qty
 
-                # 🔹 Update holding
-                holding.quantity = new_quantity
-                holding.avg_price = new_avg_price
+                holding.quantity = new_qty
+
                 holding.invested_amount = (
                     holding.quantity * holding.avg_price
                 )
 
-                # 🔹 Update portfolio
                 portfolio.available_balance -= total_cost
                 portfolio.invested_amount += total_cost
 
-            # ================================
-            # 🔹 SELL LOGIC
-            # ================================
-            elif data.trade_type == TradeType.SELL:
+            else:
 
-                # 🔹 Validation
                 if not holding or holding.quantity < data.quantity:
-                    raise HTTPException(status_code=400, detail="Not enough shares to sell")
-                    
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Not enough shares to sell",
+                    )
 
-                sell_value = data.quantity * data.price
+                sell_value = live_price * data.quantity
 
                 realized_pnl = (
-                    (data.price - holding.avg_price)
+                    (live_price - holding.avg_price)
                     * data.quantity
                 )
 
-                # 🔹 Update holding
                 holding.quantity -= data.quantity
 
                 if holding.quantity == 0:
-                    holding.avg_price = 0.0
-                    holding.invested_amount = 0.0
+                    holding.avg_price = 0
+                    holding.invested_amount = 0
                 else:
                     holding.invested_amount = (
-                        holding.quantity * holding.avg_price
+                        holding.quantity
+                        * holding.avg_price
                     )
 
                 holding.realized_pnl += realized_pnl
 
-                # 🔹 Update portfolio
                 portfolio.available_balance += sell_value
 
                 portfolio.realized_pnl += realized_pnl
 
                 portfolio.invested_amount -= (
-                    data.quantity * holding.avg_price
+                    data.quantity
+                    * holding.avg_price
                 )
 
-            # ================================
-            # 🔹 CREATE TRADE
-            # ================================
             trade = Trade(
                 user_id=user_id,
                 symbol=symbol,
                 quantity=data.quantity,
-                price=data.price,
-                trade_type=data.trade_type.value
+                price=live_price,
+                trade_type=data.trade_type.value,
             )
 
             db.add(trade)
 
-            # ================================
-            # 🔹 SAVE
-            # ================================
             db.commit()
+
             db.refresh(trade)
 
             return trade
@@ -144,14 +138,21 @@ class TradeService:
             db.rollback()
             raise
 
-        except Exception as e:
+        # except Exception as e:
+        #     db.rollback()
+        #     raise HTTPException(
+        #         status_code=500,
+        #         detail=str(e),
+        #     )
+
+        except Exception:
             db.rollback()
 
-            raise HTTPException(
-                status_code=500,
-                detail=str(e)
-            )
+            print("\n" + "=" * 80)
+            traceback.print_exc()
+            print("=" * 80 + "\n")
 
+            raise
     # ====================================
     # 🔹 GET TRADES
     # ====================================
@@ -287,9 +288,7 @@ class TradeService:
         for holding in holdings:
 
             # TEMP MARKET PRICE
-            current_price = await chart_service.get_live_price(
-                holding.symbol
-                )
+            current_price = fetch_single_price(holding.symbol)
 
             if current_price is None:
                 current_price = float(holding.avg_price)
