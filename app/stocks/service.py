@@ -1,13 +1,21 @@
-
-from typing import List, Dict, Tuple
-from app.stocks.schema import StockResponse, StockFilterEnum
-import yfinance as yf
+import logging
+from typing import Dict, List, Tuple
 
 import pandas as pd
 import yfinance as yf
 
+from app.stocks.schema import (
+    SortEnum,
+    StockFilterEnum,
+    StockResponse,
+)
 
-# Mock stock groups
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------
+# Mock Stock Data
+# ---------------------------------------------------------
+
 NIFTY_50_STOCKS = [
     {"name": "Reliance Industries", "symbol": "RELIANCE"},
     {"name": "HDFC Bank", "symbol": "HDFCBANK"},
@@ -25,10 +33,35 @@ SENSEX_STOCKS = [
 ]
 
 ALL_STOCKS = (
-    NIFTY_50_STOCKS +
-    NIFTY_BANK_STOCKS +
-    SENSEX_STOCKS
+    NIFTY_50_STOCKS
+    + NIFTY_BANK_STOCKS
+    + SENSEX_STOCKS
 )
+
+
+# ---------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------
+
+
+def get_market_status() -> str:
+    """
+    Temporary implementation.
+
+    Later replace with NSE market timings.
+    """
+    return "OPEN"
+
+
+def fetch_single_price(symbol: str):
+    price, _ = fetch_real_price(symbol)
+    print(f"Fetched price for {price}")
+
+    if price <= 0:
+        return None
+
+    return round(float(price), 2)
+
 def fetch_real_price(symbol: str):
     try:
         stock = yf.Ticker(symbol + ".NS")  # NSE stocks
@@ -52,132 +85,263 @@ def fetch_real_price(symbol: str):
         return 0, 0
 
 
+def fetch_multiple_prices(
+    symbols: List[str],
+) -> Dict[str, Tuple[float, float, float]]:
+    """
+    Returns
 
+    {
+        "RELIANCE": (
+            currentPrice,
+            changeValue,
+            changePercent
+        )
+    }
+    """
 
-
-def fetch_multiple_prices(symbols: list[str]) -> Dict[str, Tuple[float, float]]:
     if not symbols:
         return {}
 
     try:
         tickers = yf.download(
-            tickers=" ".join([s + ".NS" for s in symbols]),
-            period="1d",
+            tickers=" ".join([f"{s}.NS" for s in symbols]),
+            period="5d",
+            auto_adjust=False,
             group_by="ticker",
-            threads=True
+            threads=True,
+            progress=False,
         )
 
-        print("Tickers Response:\n", tickers)
-
         if tickers is None or len(tickers) == 0:
-            return {s: (0, 0) for s in symbols}
+            return {
+                symbol: (0.0, 0.0, 0.0)
+                for symbol in symbols
+            }
 
     except Exception as e:
-        print(f"Download error: {e}")
-        return {s: (0, 0) for s in symbols}
+        logger.exception(e)
 
-    result: Dict[str, Tuple[float, float]] = {}
+        return {
+            symbol: (0.0, 0.0, 0.0)
+            for symbol in symbols
+        }
+
+    result: Dict[str, Tuple[float, float, float]] = {}
 
     for symbol in symbols:
-        key = symbol + ".NS"
+
+        key = f"{symbol}.NS"
 
         try:
+
             if len(symbols) == 1:
                 data = tickers
             else:
-                # FIX: MultiIndex handling
-                if isinstance(tickers.columns, pd.MultiIndex):
+
+                if isinstance(
+                    tickers.columns,
+                    pd.MultiIndex,
+                ):
                     data = tickers[key]
                 else:
                     data = tickers
 
             if data.empty:
-                raise ValueError("Empty Data")
+                raise ValueError("No data")
 
-            value = round(float(data["Close"].iloc[-1]), 2)
-            open_price = float(data["Open"].iloc[-1])
+            current_price = round(
+                float(
+                    data["Close"].iloc[-1]
+                ),
+                2,
+            )
 
-            change = round(((value - open_price) / open_price) * 100, 2)
+            if len(data) >= 2:
+                previous_close = float(
+                    data["Close"].iloc[-2]
+                )
+            else:
+                previous_close = current_price
 
-            result[symbol] = (value, change)
+            change_value = round(
+                current_price - previous_close,
+                2,
+            )
+
+            if previous_close == 0:
+                change_percent = 0.0
+            else:
+                change_percent = round(
+                    (change_value / previous_close)
+                    * 100,
+                    2,
+                )
+
+            result[symbol] = (
+                current_price,
+                change_value,
+                change_percent,
+            )
 
         except Exception as e:
-            print(f"❌ ERROR for {symbol}: {e}")
-            result[symbol] = (0, 0)
+
+            logger.exception(e)
+
+            result[symbol] = (
+                0.0,
+                0.0,
+                0.0,
+            )
+
     return result
 
-def fetch_single_price(symbol: str):
-    price, _ = fetch_real_price(symbol)
-    print(f"Fetched price for {price}")
 
-    if price <= 0:
-        return None
+# ---------------------------------------------------------
+# Main Service
+# ---------------------------------------------------------
 
-    return round(float(price), 2)
-def get_stocks(index: StockFilterEnum, page: int, limit: int, search: str | None = None):
+def get_stocks(
+    index: StockFilterEnum,
+    sort: SortEnum,
+    page: int,
+    limit: int,
+    search: str | None = None,
+):
+    """
+    Fetch market stocks with
 
-    # Select group
+    - Filtering
+    - Searching
+    - Sorting
+    - Pagination
+    """
+
+    # -----------------------------
+    # Filter by Index
+    # -----------------------------
+
     if index == StockFilterEnum.NIFTY_50:
-        stocks = NIFTY_50_STOCKS
-    elif index == StockFilterEnum.NIFTY_BANK:
-        stocks = NIFTY_BANK_STOCKS
-    elif index == StockFilterEnum.SENSEX:
-        stocks = SENSEX_STOCKS
-    else:
-        stocks = ALL_STOCKS
+        stocks = NIFTY_50_STOCKS.copy()
 
-    # 🔎 Apply Search (Before Pagination)
+    elif index == StockFilterEnum.NIFTY_BANK:
+        stocks = NIFTY_BANK_STOCKS.copy()
+
+    elif index == StockFilterEnum.SENSEX:
+        stocks = SENSEX_STOCKS.copy()
+
+    else:
+        stocks = ALL_STOCKS.copy()
+
+    # -----------------------------
+    # Search
+    # -----------------------------
+
     if search:
-        search_lower = search.lower()
+
+        keyword = search.strip().lower()
 
         stocks = [
-            stock for stock in stocks
-            if search_lower in stock["name"].lower()
-            or search_lower in stock["symbol"].lower()
+            stock
+            for stock in stocks
+            if keyword in stock["name"].lower()
+            or keyword in stock["symbol"].lower()
         ]
 
-    total = len(stocks)
+    # -----------------------------
+    # Fetch prices for ALL stocks
+    # -----------------------------
 
-    
+    symbols = [
+        stock["symbol"]
+        for stock in stocks
+    ]
 
-    # Pagination
-    start = (page - 1) * limit
-    end = start + limit
-    paginated = stocks[start:end]
-
-    if not paginated:
-        return {
-            "total": total,
-            "page": page,
-            "limit": limit,
-            "data": []
-        }
-
-    result: List[StockResponse] = []
-
-    symbols = [stock["symbol"] for stock in paginated]
     price_map = fetch_multiple_prices(symbols)
 
+    stock_list = []
 
-    for stock in paginated:
-        value, change = price_map.get(stock["symbol"], (0, 0))
+    for stock in stocks:
 
-        result.append(
-            StockResponse(
-                name=stock["name"],
-                symbol=stock["symbol"],
-                value=value,
-                changePercent=change,
-                isUp=change >= 0
-            )
+        current_price, change_value, change_percent = price_map.get(
+            stock["symbol"],
+            (0.0, 0.0, 0.0),
         )
 
+        stock_list.append(
+            {
+                "symbol": stock["symbol"],
+                "name": stock["name"],
+                "exchange": "NSE",
+
+                "currentPrice": current_price,
+
+                "changeValue": change_value,
+                "changePercent": change_percent,
+
+                "isUp": change_percent >= 0,
+            }
+        )
+
+    # -----------------------------
+    # Sorting
+    # -----------------------------
+
+    if sort == SortEnum.TOP_GAINERS:
+
+        stock_list.sort(
+            key=lambda x: x["changePercent"],
+            reverse=True,
+        )
+
+    elif sort == SortEnum.TOP_LOSERS:
+
+        stock_list.sort(
+            key=lambda x: x["changePercent"],
+        )
+
+    else:
+
+        stock_list.sort(
+            key=lambda x: x["symbol"],
+        )
+
+    # -----------------------------
+    # Pagination
+    # -----------------------------
+
+    total = len(stock_list)
+
+    total_pages = max(
+        (total + limit - 1) // limit,
+        1,
+    )
+
+    start = (page - 1) * limit
+    end = start + limit
+
+    paginated = stock_list[start:end]
+
+    result = [
+        StockResponse(**stock)
+        for stock in paginated
+    ]
+
+    # -----------------------------
+    # Response
+    # -----------------------------
+
     return {
+        "marketStatus": get_market_status(),
+
         "total": total,
         "page": page,
         "limit": limit,
-        "data": result
+
+        "totalPages": total_pages,
+
+        "hasNext": page < total_pages,
+        "hasPrevious": page > 1,
+
+        "data": result,
     }
-
-
-print(fetch_real_price("RELIANCE"))
