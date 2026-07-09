@@ -1,3 +1,5 @@
+import asyncio
+
 import yfinance as yf
 
 from fastapi import HTTPException
@@ -7,16 +9,34 @@ from app.chart.utils import SYMBOL_MAP, TIMEFRAME_MAP
 
 class ChartService:
 
+    def get_provider_symbol(self, symbol: str):
+
+        symbol = symbol.upper()
+
+        if symbol in SYMBOL_MAP:
+            return SYMBOL_MAP[symbol]
+
+        if not symbol.endswith(".NS"):
+            return f"{symbol}.NS"
+
+        return symbol
+
     async def get_chart_data(
         self,
         symbol: str,
         timeframe: str,
     ):
-        
-        
 
-        # Convert frontend symbol to provider symbol
-        provider_symbol = SYMBOL_MAP.get(symbol.upper(), symbol)
+        if not symbol or not symbol.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="Symbol is required"
+            )
+
+        # ⚠️ FIX: was `SYMBOL_MAP.get(symbol.upper(), symbol)` — this skipped
+        # get_provider_symbol entirely, so any non-index symbol (e.g. "RELIANCE")
+        # was sent to yfinance without the ".NS" suffix and failed to resolve.
+        provider_symbol = self.get_provider_symbol(symbol)
 
         # Get timeframe config
         config = TIMEFRAME_MAP.get(timeframe)
@@ -28,17 +48,21 @@ class ChartService:
             )
 
         try:
-            ticker = yf.Ticker(provider_symbol)
-
-            df = ticker.history(
-                period=config["period"],
-                interval=config["interval"]
+            # ⚠️ FIX: yfinance is a blocking/sync library. Running it directly
+            # inside an async def blocks the whole event loop for every other
+            # request while this one waits on the network. asyncio.to_thread
+            # offloads it to a worker thread instead.
+            df = await asyncio.to_thread(
+                self._fetch_history,
+                provider_symbol,
+                config["period"],
+                config["interval"],
             )
 
             if df.empty:
                 raise HTTPException(
                     status_code=404,
-                    detail="No chart data found"
+                    detail=f"No chart data found for '{symbol.upper()}'"
                 )
 
             candles = []
@@ -94,30 +118,23 @@ class ChartService:
                 status_code=500,
                 detail="Failed to fetch chart data"
             )
-        
-    def get_provider_symbol(self, symbol: str):
 
-        symbol = symbol.upper()
+    def _fetch_history(self, provider_symbol: str, period: str, interval: str):
+        """Blocking yfinance call — always invoke via asyncio.to_thread."""
+        ticker = yf.Ticker(provider_symbol)
+        return ticker.history(period=period, interval=interval)
 
-        if symbol in SYMBOL_MAP:
-            return SYMBOL_MAP[symbol]
-
-        if not symbol.endswith(".NS"):
-            return f"{symbol}.NS"
-
-        return symbol
-        
     async def get_live_price(self, symbol: str):
 
         provider_symbol = self.get_provider_symbol(symbol)
 
         try:
-
-            ticker = yf.Ticker(provider_symbol)
-
-            df = ticker.history(
-                period="1d",
-                interval="5m",
+            # ⚠️ FIX: same blocking-call issue as above.
+            df = await asyncio.to_thread(
+                self._fetch_history,
+                provider_symbol,
+                "1d",
+                "5m",
             )
 
             if df.empty:
@@ -131,4 +148,6 @@ class ChartService:
         except Exception as e:
             print("Live Price Error:", e)
             return None
+
+
 chart_service = ChartService()

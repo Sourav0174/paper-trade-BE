@@ -1,4 +1,4 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 
 from app.chart.schemas import ChartResponseSchema
 from app.chart.service import chart_service
@@ -14,14 +14,14 @@ router = APIRouter(
     response_model=ChartResponseSchema
 )
 async def get_chart(
-    symbol: str,
+    symbol: str = Query(..., min_length=1),
     timeframe: str = "1D",
 ):
 
     return await chart_service.get_chart_data(
         symbol=symbol,
         timeframe=timeframe,
-    ) 
+    )
 
 @router.get("/price/{symbol}")
 async def get_price(symbol: str):
@@ -31,6 +31,6 @@ async def get_price(symbol: str):
     )
 
     return {
-        "symbol": symbol,
+        "symbol": symbol.upper(),
         "price": price,
     }

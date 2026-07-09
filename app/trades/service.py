@@ -96,6 +96,10 @@ class TradeService:
                     * data.quantity
                 )
 
+                # Capture avg_price BEFORE it can be reset to 0 below,
+                # so the portfolio-level invested_amount reduction is correct.
+                sell_avg_price = holding.avg_price
+
                 holding.quantity -= data.quantity
 
                 if holding.quantity == 0:
@@ -115,7 +119,7 @@ class TradeService:
 
                 portfolio.invested_amount -= (
                     data.quantity
-                    * holding.avg_price
+                    * sell_avg_price
                 )
 
             trade = Trade(
@@ -414,4 +418,4 @@ class TradeService:
                 status_code=500,
                 detail=str(e)
             )
-trade_service = TradeService()
+trade_service = trade_service = TradeService()
