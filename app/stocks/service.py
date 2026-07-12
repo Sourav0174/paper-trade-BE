@@ -1,8 +1,20 @@
 import logging
+import math
 from typing import Dict, List, Tuple
-
+import traceback
 import pandas as pd
 import yfinance as yf
+import json
+from pathlib import Path
+
+DATA_PATH = (
+    Path(__file__).parent
+    / "data"
+    / "nse_stocks.json"
+)
+
+with open(DATA_PATH, "r", encoding="utf-8") as f:
+    ALL_STOCKS = json.load(f)
 
 from app.stocks.schema import (
     SortEnum,
@@ -12,37 +24,6 @@ from app.stocks.schema import (
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------
-# Mock Stock Data
-# ---------------------------------------------------------
-
-NIFTY_50_STOCKS = [
-    {"name": "Reliance Industries", "symbol": "RELIANCE"},
-    {"name": "HDFC Bank", "symbol": "HDFCBANK"},
-    {"name": "Infosys", "symbol": "INFY"},
-]
-
-NIFTY_BANK_STOCKS = [
-    {"name": "ICICI Bank", "symbol": "ICICIBANK"},
-    {"name": "Axis Bank", "symbol": "AXISBANK"},
-]
-
-SENSEX_STOCKS = [
-    {"name": "TCS", "symbol": "TCS"},
-    {"name": "ITC", "symbol": "ITC"},
-]
-
-ALL_STOCKS = (
-    NIFTY_50_STOCKS
-    + NIFTY_BANK_STOCKS
-    + SENSEX_STOCKS
-)
-
-
-# ---------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------
-
 
 def get_market_status() -> str:
     """
@@ -51,6 +32,25 @@ def get_market_status() -> str:
     Later replace with NSE market timings.
     """
     return "OPEN"
+
+def safe_float(value, default=0.0):
+    """
+    Converts any value to float while protecting against:
+    - None
+    - NaN
+    - Infinity
+    """
+
+    try:
+        value = float(value)
+
+        if math.isnan(value) or math.isinf(value):
+            return default
+
+        return value
+
+    except Exception:
+        return default
 
 
 def fetch_single_price(symbol: str):
@@ -64,26 +64,33 @@ def fetch_single_price(symbol: str):
 
 def fetch_real_price(symbol: str):
     try:
-        stock = yf.Ticker(symbol + ".NS")  # NSE stocks
+        stock = yf.Ticker(symbol + ".NS")
 
         data = stock.history(period="5d")
 
         if data.empty:
-            return 0, 0
+            return 0.0, 0.0
 
-        latest = data.iloc[-1]
+        value = safe_float(data["Close"].iloc[-1])
 
-        value = float(data["Close"].iloc[-1])
-        open_price = float(data["Open"].iloc[-1])
+        open_price = safe_float(
+            data["Open"].iloc[-1],
+            value,
+        )
 
-        change = round(((value-open_price)/open_price)*100,2)
+        if open_price == 0:
+            change = 0.0
+        else:
+            change = round(
+                ((value - open_price) / open_price) * 100,
+                2,
+            )
 
-        return float(value), float(change)
+        return round(value, 2), change
 
     except Exception as e:
         print(f"Error fetching {symbol}: {e}")
-        return 0, 0
-
+        return 0.0, 0.0
 
 def fetch_multiple_prices(
     symbols: List[str],
@@ -105,7 +112,7 @@ def fetch_multiple_prices(
 
     try:
         tickers = yf.download(
-            tickers=" ".join([f"{s}.NS" for s in symbols]),
+            tickers=" ".join(f"{s}.NS" for s in symbols),
             period="5d",
             auto_adjust=False,
             group_by="ticker",
@@ -120,7 +127,8 @@ def fetch_multiple_prices(
             }
 
     except Exception as e:
-        logger.exception(e)
+        traceback.print_exc()
+        print("DOWNLOAD FAILED:", e)
 
         return {
             symbol: (0.0, 0.0, 0.0)
@@ -131,19 +139,17 @@ def fetch_multiple_prices(
 
     for symbol in symbols:
 
-        key = f"{symbol}.NS"
-
         try:
 
             if len(symbols) == 1:
                 data = tickers
-            else:
 
+            else:
                 if isinstance(
                     tickers.columns,
                     pd.MultiIndex,
                 ):
-                    data = tickers[key]
+                    data = tickers[f"{symbol}.NS"]
                 else:
                     data = tickers
 
@@ -151,15 +157,17 @@ def fetch_multiple_prices(
                 raise ValueError("No data")
 
             current_price = round(
-                float(
-                    data["Close"].iloc[-1]
-                ),
+                safe_float(data["Close"].iloc[-1]),
                 2,
             )
 
             if len(data) >= 2:
-                previous_close = float(
-                    data["Close"].iloc[-2]
+                previous_close = round(
+                    safe_float(
+                        data["Close"].iloc[-2],
+                        current_price,
+                    ),
+                    2,
                 )
             else:
                 previous_close = current_price
@@ -173,10 +181,12 @@ def fetch_multiple_prices(
                 change_percent = 0.0
             else:
                 change_percent = round(
-                    (change_value / previous_close)
+                    ((current_price - previous_close) / previous_close)
                     * 100,
                     2,
                 )
+
+            change_percent = safe_float(change_percent)
 
             result[symbol] = (
                 current_price,
@@ -184,9 +194,8 @@ def fetch_multiple_prices(
                 change_percent,
             )
 
-        except Exception as e:
-
-            logger.exception(e)
+        except Exception:
+            traceback.print_exc()
 
             result[symbol] = (
                 0.0,
@@ -197,10 +206,6 @@ def fetch_multiple_prices(
     return result
 
 
-# ---------------------------------------------------------
-# Main Service
-# ---------------------------------------------------------
-
 def get_stocks(
     index: StockFilterEnum,
     sort: SortEnum,
@@ -210,107 +215,42 @@ def get_stocks(
 ):
     """
     Fetch market stocks with
-
-    - Filtering
-    - Searching
-    - Sorting
+    - Search
     - Pagination
+    - Real-time prices
     """
 
-    # -----------------------------
-    # Filter by Index
-    # -----------------------------
+    # ---------------------------------
+    # Use all NSE stocks
+    # ---------------------------------
 
-    if index == StockFilterEnum.NIFTY_50:
-        stocks = NIFTY_50_STOCKS.copy()
+    stocks = ALL_STOCKS.copy()
 
-    elif index == StockFilterEnum.NIFTY_BANK:
-        stocks = NIFTY_BANK_STOCKS.copy()
-
-    elif index == StockFilterEnum.SENSEX:
-        stocks = SENSEX_STOCKS.copy()
-
-    else:
-        stocks = ALL_STOCKS.copy()
-
-    # -----------------------------
+    # ---------------------------------
     # Search
-    # -----------------------------
+    # ---------------------------------
 
     if search:
-
         keyword = search.strip().lower()
 
         stocks = [
             stock
             for stock in stocks
-            if keyword in stock["name"].lower()
-            or keyword in stock["symbol"].lower()
+            if keyword in stock["symbol"].lower()
+            or keyword in stock["name"].lower()
         ]
 
-    # -----------------------------
-    # Fetch prices for ALL stocks
-    # -----------------------------
+    # ---------------------------------
+    # Default sort (alphabetical)
+    # ---------------------------------
 
-    symbols = [
-        stock["symbol"]
-        for stock in stocks
-    ]
+    stocks.sort(key=lambda x: x["symbol"])
 
-    price_map = fetch_multiple_prices(symbols)
+    # ---------------------------------
+    # Pagination FIRST
+    # ---------------------------------
 
-    stock_list = []
-
-    for stock in stocks:
-
-        current_price, change_value, change_percent = price_map.get(
-            stock["symbol"],
-            (0.0, 0.0, 0.0),
-        )
-
-        stock_list.append(
-            {
-                "symbol": stock["symbol"],
-                "name": stock["name"],
-                "exchange": "NSE",
-
-                "currentPrice": current_price,
-
-                "changeValue": change_value,
-                "changePercent": change_percent,
-
-                "isUp": change_percent >= 0,
-            }
-        )
-
-    # -----------------------------
-    # Sorting
-    # -----------------------------
-
-    if sort == SortEnum.TOP_GAINERS:
-
-        stock_list.sort(
-            key=lambda x: x["changePercent"],
-            reverse=True,
-        )
-
-    elif sort == SortEnum.TOP_LOSERS:
-
-        stock_list.sort(
-            key=lambda x: x["changePercent"],
-        )
-
-    else:
-
-        stock_list.sort(
-            key=lambda x: x["symbol"],
-        )
-
-    # -----------------------------
-    # Pagination
-    # -----------------------------
-
-    total = len(stock_list)
+    total = len(stocks)
 
     total_pages = max(
         (total + limit - 1) // limit,
@@ -320,28 +260,61 @@ def get_stocks(
     start = (page - 1) * limit
     end = start + limit
 
-    paginated = stock_list[start:end]
+    paginated = stocks[start:end]
 
-    result = [
-        StockResponse(**stock)
+    # ---------------------------------
+    # Fetch prices ONLY for current page
+    # ---------------------------------
+
+    symbols = [
+        stock["symbol"]
         for stock in paginated
     ]
 
-    # -----------------------------
+    price_map = fetch_multiple_prices(symbols)
+
+    stock_list = []
+
+    for stock in paginated:
+
+        current_price, change_value, change_percent = price_map.get(
+            stock["symbol"],
+            (0.0, 0.0, 0.0),
+        )
+
+        stock_list.append(
+            StockResponse(
+                symbol=stock["symbol"],
+                name=stock["name"],
+                exchange="NSE",
+                currentPrice=safe_float(current_price),
+                changeValue=safe_float(change_value),
+                changePercent=safe_float(change_percent),
+                isUp=safe_float(change_percent) >= 0,
+            )
+        )
+
+    # ---------------------------------
+    # Sort current page if requested
+    # ---------------------------------
+
+    # TODO:
+    # TOP_GAINERS and TOP_LOSERS will be implemented
+    # after fetching prices for the required universe.
+
+    # ---------------------------------
     # Response
-    # -----------------------------
+    # ---------------------------------
 
     return {
         "marketStatus": get_market_status(),
-
         "total": total,
         "page": page,
         "limit": limit,
-
         "totalPages": total_pages,
-
         "hasNext": page < total_pages,
         "hasPrevious": page > 1,
-
-        "data": result,
+        "data": stock_list,
     }
+
+
