@@ -1,7 +1,10 @@
 import logging
 import math
+import threading
+import time
+from datetime import datetime, time as dtime
+from zoneinfo import ZoneInfo
 from typing import Dict, List, Tuple
-import traceback
 import pandas as pd
 import yfinance as yf
 import json
@@ -16,22 +19,30 @@ DATA_PATH = (
 with open(DATA_PATH, "r", encoding="utf-8") as f:
     ALL_STOCKS = json.load(f)
 
-from app.stocks.schema import (
-    SortEnum,
-    StockFilterEnum,
-    StockResponse,
-)
-
 logger = logging.getLogger(__name__)
 
 
 def get_market_status() -> str:
     """
-    Temporary implementation.
+    Real NSE market status.
 
-    Later replace with NSE market timings.
+    - Timezone: Asia/Kolkata
+    - Open Monday-Friday, 9:15 AM - 3:30 PM IST
+    - Closed on Saturday, Sunday, and outside trading hours
     """
-    return "OPEN"
+    now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
+
+    # Monday = 0 ... Sunday = 6
+    if now_ist.weekday() >= 5:
+        return "CLOSED"
+
+    market_open = dtime(9, 15)
+    market_close = dtime(15, 30)
+
+    if market_open <= now_ist.time() <= market_close:
+        return "OPEN"
+
+    return "CLOSED"
 
 def safe_float(value, default=0.0):
     """
@@ -55,7 +66,7 @@ def safe_float(value, default=0.0):
 
 def fetch_single_price(symbol: str):
     price, _ = fetch_real_price(symbol)
-    print(f"Fetched price for {price}")
+    logger.debug("Fetched price for %s: %s", symbol, price)
 
     if price <= 0:
         return None
@@ -88,8 +99,8 @@ def fetch_real_price(symbol: str):
 
         return round(value, 2), change
 
-    except Exception as e:
-        print(f"Error fetching {symbol}: {e}")
+    except Exception:
+        logger.exception("Failed fetching %s", symbol)
         return 0.0, 0.0
 
 def fetch_multiple_prices(
@@ -127,8 +138,7 @@ def fetch_multiple_prices(
             }
 
     except Exception as e:
-        traceback.print_exc()
-        print("DOWNLOAD FAILED:", e)
+        logger.exception("DOWNLOAD FAILED: %s", e)
 
         return {
             symbol: (0.0, 0.0, 0.0)
@@ -195,7 +205,7 @@ def fetch_multiple_prices(
             )
 
         except Exception:
-            traceback.print_exc()
+            logger.exception("Failed to process price data for %s", symbol)
 
             result[symbol] = (
                 0.0,
@@ -206,18 +216,66 @@ def fetch_multiple_prices(
     return result
 
 
+# ---------------------------------
+# In-memory price cache (60s TTL)
+# ---------------------------------
+
+CACHE_TTL_SECONDS = 60
+
+_price_cache: Dict[Tuple[str, ...], Tuple[float, Dict[str, Tuple[float, float, float]]]] = {}
+_price_cache_lock = threading.Lock()
+
+
+def get_cached_prices(
+    symbols: List[str],
+) -> Dict[str, Tuple[float, float, float]]:
+
+    if not symbols:
+        return {}
+
+    cache_key = tuple(sorted(symbols))
+    now = time.time()
+
+    with _price_cache_lock:
+        cached = _price_cache.get(cache_key)
+
+        if cached is not None:
+            cached_at, cached_prices = cached
+
+            if now - cached_at < CACHE_TTL_SECONDS:
+                return cached_prices
+
+    fresh_prices = fetch_multiple_prices(symbols)
+
+    with _price_cache_lock:
+        # Remove expired cache entries
+        expired_keys = [
+            key
+            for key, (cached_at, _) in _price_cache.items()
+            if now - cached_at >= CACHE_TTL_SECONDS
+        ]
+
+        for key in expired_keys:
+            del _price_cache[key]
+
+        # Save new cache
+        _price_cache[cache_key] = (
+            now,
+            fresh_prices,
+        )
+
+    return fresh_prices
+
 def get_stocks(
-    index: StockFilterEnum,
-    sort: SortEnum,
     page: int,
     limit: int,
     search: str | None = None,
 ):
     """
-    Fetch market stocks with
+    Fetch all NSE stocks with
     - Search
     - Pagination
-    - Real-time prices
+    - Real-time prices (cached for 60s)
     """
 
     # ---------------------------------
@@ -241,7 +299,7 @@ def get_stocks(
         ]
 
     # ---------------------------------
-    # Default sort (alphabetical)
+    # Sort alphabetically
     # ---------------------------------
 
     stocks.sort(key=lambda x: x["symbol"])
@@ -260,10 +318,13 @@ def get_stocks(
     start = (page - 1) * limit
     end = start + limit
 
+    # Slicing beyond the list bounds naturally yields an empty list
+    # (no exception), so out-of-range pages simply return no data
+    # while total/totalPages/hasNext/hasPrevious stay accurate.
     paginated = stocks[start:end]
 
     # ---------------------------------
-    # Fetch prices ONLY for current page
+    # Fetch prices ONLY for current page (cached)
     # ---------------------------------
 
     symbols = [
@@ -271,7 +332,7 @@ def get_stocks(
         for stock in paginated
     ]
 
-    price_map = fetch_multiple_prices(symbols)
+    price_map = get_cached_prices(symbols)
 
     stock_list = []
 
@@ -283,24 +344,16 @@ def get_stocks(
         )
 
         stock_list.append(
-            StockResponse(
-                symbol=stock["symbol"],
-                name=stock["name"],
-                exchange="NSE",
-                currentPrice=safe_float(current_price),
-                changeValue=safe_float(change_value),
-                changePercent=safe_float(change_percent),
-                isUp=safe_float(change_percent) >= 0,
-            )
+            {
+                "symbol": stock["symbol"],
+                "name": stock["name"],
+                "exchange": "NSE",
+                "currentPrice": safe_float(current_price),
+                "changeValue": safe_float(change_value),
+                "changePercent": safe_float(change_percent),
+                "isUp": safe_float(change_percent) >= 0,
+            }
         )
-
-    # ---------------------------------
-    # Sort current page if requested
-    # ---------------------------------
-
-    # TODO:
-    # TOP_GAINERS and TOP_LOSERS will be implemented
-    # after fetching prices for the required universe.
 
     # ---------------------------------
     # Response
@@ -316,5 +369,3 @@ def get_stocks(
         "hasPrevious": page > 1,
         "data": stock_list,
     }
-
-
