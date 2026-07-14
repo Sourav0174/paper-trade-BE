@@ -2,7 +2,7 @@ from fastapi import APIRouter, Query
 
 from app.stocks.schema import PaginatedStockResponse
 
-from app.stocks.service import get_stocks
+from app.stocks.service import get_market_status, get_stocks
 
 router = APIRouter(
     prefix="/market",
@@ -24,3 +24,9 @@ def fetch_stocks(
         limit=limit,
         search=search,
     )
+
+@router.get("/status")
+def market_status():
+    return {
+        "marketStatus": get_market_status()
+    }

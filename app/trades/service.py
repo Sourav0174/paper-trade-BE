@@ -4,12 +4,20 @@ from app.chart.service import chart_service
 from app.trades.models import Holding, Portfolio, Trade
 from app.trades.schema import TradeType
 from app.stocks.service import fetch_single_price
+from app.stocks.service import get_market_status
 import traceback
 
 
 class TradeService:
 
     def create_trade(self, db: Session, user_id: int, data):
+
+
+        if get_market_status() != "OPEN":
+            raise HTTPException(
+                status_code=400,
+                detail="Market is closed. Orders can only be placed during market hours."
+            )
 
         symbol = data.symbol.upper().strip()
 
