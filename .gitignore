@@ -24,5 +24,5 @@ alembic/versions/*.pyc
 # Mac
 .DS_Store
 
-*.json
+paper-trade-496205-3573c4335a37.json
 papertrade-google-play.json
