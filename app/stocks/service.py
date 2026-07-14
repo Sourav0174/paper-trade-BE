@@ -23,13 +23,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_market_status() -> str:
-    """
-    Real NSE market status.
 
-    - Timezone: Asia/Kolkata
-    - Open Monday-Friday, 9:15 AM - 3:30 PM IST
-    - Closed on Saturday, Sunday, and outside trading hours
-    """
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
 
     # Monday = 0 ... Sunday = 6
