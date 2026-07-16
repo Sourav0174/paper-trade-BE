@@ -1,10 +1,15 @@
+from zoneinfo import ZoneInfo
+
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
-from app.chart.service import chart_service
+
 from app.trades.models import Holding, Portfolio, Trade
 from app.trades.schema import TradeType
 from app.stocks.service import fetch_single_price
 from app.stocks.service import get_market_status
+from app.users.models import User, SubscriptionEnum
+from datetime import datetime, time, timedelta, timezone
+from sqlalchemy import func
 import traceback
 
 
@@ -52,8 +57,58 @@ class TradeService:
                 .first()
             )
 
+
+            user = (
+                db.query(User)
+                .filter(User.id == user_id)
+                .first()
+            )
+
+            if not user:
+                raise HTTPException(
+                    status_code=404,
+                    detail="User not found"
+                )
+
             if data.trade_type == TradeType.BUY:
 
+
+
+                if user.subscription == SubscriptionEnum.FREE:  # type: ignore
+
+                    ist = ZoneInfo("Asia/Kolkata")
+
+                    # Today's date in IST
+                    today_ist = datetime.now(ist).date()
+
+                    # Start/end of today in IST
+                    start_ist = datetime.combine(today_ist, time.min, tzinfo=ist)
+                    end_ist = start_ist + timedelta(days=1)
+
+                    # Convert to UTC and remove tzinfo because DB stores naive UTC
+                    start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+                    end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+
+                    buy_orders_today = (
+                        db.query(func.count(Trade.id))
+                        .filter(
+                            Trade.user_id == user_id,
+                            Trade.trade_type == TradeType.BUY.value,
+                            Trade.created_at >= start_utc,
+                            Trade.created_at < end_utc,
+                        )
+                        .scalar()
+                    )
+
+                    if buy_orders_today >= 5:
+                        raise HTTPException(
+                            status_code=403,
+
+                            detail={
+                                "code": "BUY_LIMIT_REACHED",
+                                "message": "Free users can place only 5 buy orders per day. Upgrade to Premium for unlimited trading."
+                            }
+                        )  
                 total_cost = live_price * data.quantity
 
                 if portfolio.available_balance < total_cost:

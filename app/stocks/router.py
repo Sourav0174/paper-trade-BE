@@ -1,14 +1,11 @@
 from fastapi import APIRouter, Query
-
 from app.stocks.schema import PaginatedStockResponse
-
 from app.stocks.service import get_market_status, get_stocks
 
 router = APIRouter(
     prefix="/market",
     tags=["Market"],
 )
-
 
 @router.get(
     "/stocks",
