@@ -114,6 +114,8 @@ def fetch_multiple_prices(
 
     if not symbols:
         return {}
+    
+
 
     try:
         tickers = yf.download(
@@ -124,6 +126,29 @@ def fetch_multiple_prices(
             threads=True,
             progress=False,
         )
+
+        print("=" * 80)
+        print("Downloaded columns:")
+        print(tickers.columns) # type: ignore
+
+        if isinstance(tickers.columns, pd.MultiIndex): # type: ignore
+            print("Level 0:", list(tickers.columns.levels[0])) # type: ignore
+            print("Level 1:", list(tickers.columns.levels[1])) # type: ignore
+
+        print("=" * 80)
+
+
+        expected = {f"{s}.NS" for s in symbols}
+
+        if isinstance(tickers.columns, pd.MultiIndex): # type: ignore
+            if "Ticker" in tickers.columns.names: # type: ignore
+                available = set(tickers.columns.get_level_values("Ticker")) # type: ignore
+            else:
+                available = set(tickers.columns.get_level_values(0)) | set(tickers.columns.get_level_values(1)) # type: ignore
+        else:
+            available = set()
+
+        print("Missing:", expected - available)
 
         if tickers is None or len(tickers) == 0:
             return {
@@ -153,7 +178,14 @@ def fetch_multiple_prices(
                     tickers.columns,
                     pd.MultiIndex,
                 ):
-                    data = tickers[f"{symbol}.NS"]
+                    ticker = f"{symbol}.NS"
+
+                    if ticker in tickers.columns.get_level_values(0):
+                        data = tickers[ticker]
+                    elif ticker in tickers.columns.get_level_values(1):
+                        data = tickers.xs(ticker, axis=1, level=1)
+                    else:
+                        raise KeyError(f"{ticker} not found")
                 else:
                     data = tickers
 
