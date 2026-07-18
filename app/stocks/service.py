@@ -22,6 +22,87 @@ with open(DATA_PATH, "r", encoding="utf-8") as f:
 logger = logging.getLogger(__name__)
 
 
+def fetch_historical_prices(
+    symbol: str,
+    period: str,
+    interval: str,
+) -> pd.DataFrame:
+    """
+    Returns OHLC history for a symbol.
+
+    Empty DataFrame on failure or when no data is available.
+    """
+
+    try:
+        stock = yf.Ticker(symbol + ".NS")
+
+        data = stock.history(
+            period=period,
+            interval=interval,
+        )
+
+        if data is None or data.empty:
+            return pd.DataFrame()
+
+        return data
+
+    except Exception:
+        logger.exception(
+            "Failed fetching history for %s (period=%s, interval=%s)",
+            symbol,
+            period,
+            interval,
+        )
+        return pd.DataFrame()
+
+
+# ---------------------------------
+# In-memory historical cache (10min TTL)
+# ---------------------------------
+
+HISTORICAL_CACHE_TTL_SECONDS = 600
+
+_historical_cache: Dict[Tuple[str, str, str], Tuple[float, pd.DataFrame]] = {}
+_historical_cache_lock = threading.Lock()
+
+
+def get_cached_historical_prices(
+    symbol: str,
+    period: str,
+    interval: str,
+) -> pd.DataFrame:
+
+    cache_key = (symbol, period, interval)
+    now = time.time()
+
+    with _historical_cache_lock:
+        cached = _historical_cache.get(cache_key)
+
+        if cached is not None:
+            cached_at, cached_frame = cached
+
+            if now - cached_at < HISTORICAL_CACHE_TTL_SECONDS:
+                return cached_frame
+
+    frame = fetch_historical_prices(symbol, period, interval)
+
+    if frame.empty:
+        return frame
+
+    with _historical_cache_lock:
+        expired_keys = [
+            key
+            for key, (cached_at, _) in _historical_cache.items()
+            if now - cached_at >= HISTORICAL_CACHE_TTL_SECONDS
+        ]
+
+        for key in expired_keys:
+            del _historical_cache[key]
+
+        _historical_cache[cache_key] = (now, frame)
+
+    return frame
+
 def get_market_status() -> str:
 
     now_ist = datetime.now(ZoneInfo("Asia/Kolkata"))
