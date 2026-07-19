@@ -294,9 +294,7 @@ class PerformanceService:
         if not close_series:
             return []
 
-        # First valid series defines the master timeline so the
-        # chart point count stays deterministic per period.
-        timeline = next(iter(close_series.values())).index
+        timeline = max(close_series.values(), key=len,).index
 
         history: List[PerformancePoint] = []
         last_index = len(timeline) - 1
