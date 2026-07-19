@@ -56,13 +56,14 @@ def fetch_historical_prices(
         return pd.DataFrame()
 
 
-# ---------------------------------
-# In-memory historical cache (10min TTL)
-# ---------------------------------
-
 HISTORICAL_CACHE_TTL_SECONDS = 600
+MAX_HISTORICAL_CACHE_SIZE = 500
 
-_historical_cache: Dict[Tuple[str, str, str], Tuple[float, pd.DataFrame]] = {}
+_historical_cache: Dict[
+    Tuple[str, str, str],
+    Tuple[float, pd.DataFrame],
+] = {}
+
 _historical_cache_lock = threading.Lock()
 
 
@@ -90,6 +91,7 @@ def get_cached_historical_prices(
         return frame
 
     with _historical_cache_lock:
+
         expired_keys = [
             key
             for key, (cached_at, _) in _historical_cache.items()
@@ -99,7 +101,17 @@ def get_cached_historical_prices(
         for key in expired_keys:
             del _historical_cache[key]
 
-        _historical_cache[cache_key] = (now, frame)
+        if len(_historical_cache) >= MAX_HISTORICAL_CACHE_SIZE:
+            oldest_key = min(
+                _historical_cache,
+                key=lambda key: _historical_cache[key][0],
+            )
+            del _historical_cache[oldest_key]
+
+        _historical_cache[cache_key] = (
+            now,
+            frame,
+        )
 
     return frame
 
