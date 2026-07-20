@@ -3,9 +3,10 @@ from logging.config import fileConfig
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
 from app.database import Base
-from app.users.models import User 
+from app.users.models import User
 
 import app.users.models
+import app.trades.models
 
 
 from alembic import context
