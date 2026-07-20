@@ -71,8 +71,11 @@ class PerformanceService:
                 live_price * holding.quantity
             )
 
+        # Reserved cash (locked by pending BUY limit orders) is still user
+        # equity, so it counts toward net worth alongside available cash.
         net_worth = (
             portfolio.available_balance
+            + portfolio.reserved_balance
             + current_value
         )
 

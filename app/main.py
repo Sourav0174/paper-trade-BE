@@ -1,3 +1,5 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from app.trades.router import router as trade_router
 from app.database import engine
@@ -14,6 +16,7 @@ from app.trades.router import router as trade_router
 from app.market.router import router as market_router
 from app.stocks.router import router as stock_router
 from app.performance.router import router as performance_router
+from app.trades.scheduler import start_scheduler, shutdown_scheduler
 
 
 User.metadata.create_all(bind=engine)
@@ -21,7 +24,15 @@ from app.trades.models import Trade
 
 Trade.metadata.create_all(bind=engine)
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    start_scheduler()
+    yield
+    shutdown_scheduler()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.include_router(user_router, prefix="/users", tags=["Users"])
 app.include_router(trade_router)

@@ -3,8 +3,8 @@ from zoneinfo import ZoneInfo
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.trades.models import Holding, Portfolio, Trade
-from app.trades.schema import TradeType
+from app.trades.models import Holding, Order, Portfolio, Trade
+from app.trades.enums import OrderStatus, OrderType, TradeType
 from app.stocks.service import fetch_single_price
 from app.stocks.service import get_market_status
 from app.users.models import User, SubscriptionEnum
@@ -16,7 +16,6 @@ import traceback
 class TradeService:
 
     def create_trade(self, db: Session, user_id: int, data):
-
 
         if get_market_status() != "OPEN":
             raise HTTPException(
@@ -34,6 +33,32 @@ class TradeService:
                 status_code=400,
                 detail="Unable to fetch live price."
             )
+
+        return self.execute_order(
+            db,
+            user_id,
+            symbol,
+            data.quantity,
+            data.trade_type,
+            live_price,
+        )
+
+    # ====================================
+    # 🔹 EXECUTE ORDER
+    # Single execution path for MARKET and LIMIT orders. `order` is the
+    # originating Order row - present for both, but only LIMIT orders carry
+    # a reservation to release before the fill is applied.
+    # ====================================
+    def execute_order(
+        self,
+        db: Session,
+        user_id: int,
+        symbol: str,
+        quantity: int,
+        trade_type: TradeType,
+        live_price: float,
+        order: Order | None = None,
+    ) -> Trade:
 
         try:
 
@@ -70,46 +95,28 @@ class TradeService:
                     detail="User not found"
                 )
 
-            if data.trade_type == TradeType.BUY:
+            # No Order was handed in - this is the legacy direct-execution path
+            # (POST /trades/). Synthesize one so every execution, old endpoint
+            # or new, is backed by an Order row, and apply the placement-time
+            # checks OrderService would otherwise have already run.
+            if order is None:
+                self.check_free_user_buy_cap(db, user, trade_type)
+                order = Order(
+                    user_id=user_id,
+                    symbol=symbol,
+                    quantity=quantity,
+                    trade_type=trade_type,
+                    order_type=OrderType.MARKET,
+                    status=OrderStatus.PENDING,
+                )
+                db.add(order)
 
+            elif order.order_type == OrderType.LIMIT:
+                self.release_reservation(portfolio, holding, order)
 
+            if trade_type == TradeType.BUY:
 
-                if user.subscription == SubscriptionEnum.FREE:  # type: ignore
-
-                    ist = ZoneInfo("Asia/Kolkata")
-
-                    # Today's date in IST
-                    today_ist = datetime.now(ist).date()
-
-                    # Start/end of today in IST
-                    start_ist = datetime.combine(today_ist, time.min, tzinfo=ist)
-                    end_ist = start_ist + timedelta(days=1)
-
-                    # Convert to UTC and remove tzinfo because DB stores naive UTC
-                    start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
-                    end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
-
-                    buy_orders_today = (
-                        db.query(func.count(Trade.id))
-                        .filter(
-                            Trade.user_id == user_id,
-                            Trade.trade_type == TradeType.BUY.value,
-                            Trade.created_at >= start_utc,
-                            Trade.created_at < end_utc,
-                        )
-                        .scalar()
-                    )
-
-                    if buy_orders_today >= 5:
-                        raise HTTPException(
-                            status_code=403,
-
-                            detail={
-                                "code": "BUY_LIMIT_REACHED",
-                                "message": "Free users can place only 5 buy orders per day. Upgrade to Premium for unlimited trading."
-                            }
-                        )  
-                total_cost = live_price * data.quantity
+                total_cost = live_price * quantity
 
                 if portfolio.available_balance < total_cost:
                     raise HTTPException(
@@ -128,7 +135,7 @@ class TradeService:
                     )
                     db.add(holding)
 
-                new_qty = holding.quantity + data.quantity
+                new_qty = holding.quantity + quantity
 
                 holding.avg_price = (
                     (holding.quantity * holding.avg_price)
@@ -146,24 +153,31 @@ class TradeService:
 
             else:
 
-                if not holding or holding.quantity < data.quantity:
+                # Available-to-sell excludes shares already locked by other
+                # pending LIMIT sell orders.
+                available_quantity = (
+                    holding.quantity - holding.reserved_quantity
+                    if holding else 0
+                )
+
+                if not holding or available_quantity < quantity:
                     raise HTTPException(
                         status_code=400,
                         detail="Not enough shares to sell",
                     )
 
-                sell_value = live_price * data.quantity
+                sell_value = live_price * quantity
 
                 realized_pnl = (
                     (live_price - holding.avg_price)
-                    * data.quantity
+                    * quantity
                 )
 
                 # Capture avg_price BEFORE it can be reset to 0 below,
                 # so the portfolio-level invested_amount reduction is correct.
                 sell_avg_price = holding.avg_price
 
-                holding.quantity -= data.quantity
+                holding.quantity -= quantity
 
                 if holding.quantity == 0:
                     holding.avg_price = 0
@@ -181,19 +195,24 @@ class TradeService:
                 portfolio.realized_pnl += realized_pnl
 
                 portfolio.invested_amount -= (
-                    data.quantity
+                    quantity
                     * sell_avg_price
                 )
 
             trade = Trade(
                 user_id=user_id,
                 symbol=symbol,
-                quantity=data.quantity,
+                quantity=quantity,
                 price=live_price,
-                trade_type=data.trade_type.value,
+                trade_type=trade_type.value,
             )
 
             db.add(trade)
+
+            order.status = OrderStatus.EXECUTED
+            order.executed_price = live_price
+            order.executed_at = datetime.utcnow()
+            db.add(order)
 
             db.commit()
 
@@ -220,6 +239,66 @@ class TradeService:
             print("=" * 80 + "\n")
 
             raise
+
+    def release_reservation(
+        self,
+        portfolio: Portfolio,
+        holding: Holding | None,
+        order: Order,
+    ) -> None:
+        """Returns cash/shares locked by a pending LIMIT order to the available pool."""
+
+        if order.trade_type == TradeType.BUY:
+            portfolio.reserved_balance -= order.reserved_amount
+            portfolio.available_balance += order.reserved_amount
+        elif holding is not None:
+            holding.reserved_quantity -= order.quantity
+
+    def check_free_user_buy_cap(
+        self,
+        db: Session,
+        user: User,
+        trade_type: TradeType,
+    ) -> None:
+        """Free-tier users may place at most 5 BUY orders per IST calendar day."""
+
+        if trade_type != TradeType.BUY or user.subscription != SubscriptionEnum.FREE:  # type: ignore
+            return
+
+        ist = ZoneInfo("Asia/Kolkata")
+
+        # Today's date in IST
+        today_ist = datetime.now(ist).date()
+
+        # Start/end of today in IST
+        start_ist = datetime.combine(today_ist, time.min, tzinfo=ist)
+        end_ist = start_ist + timedelta(days=1)
+
+        # Convert to UTC and remove tzinfo because DB stores naive UTC
+        start_utc = start_ist.astimezone(timezone.utc).replace(tzinfo=None)
+        end_utc = end_ist.astimezone(timezone.utc).replace(tzinfo=None)
+
+        buy_orders_today = (
+            db.query(func.count(Order.id))
+            .filter(
+                Order.user_id == user.id,
+                Order.trade_type == TradeType.BUY,
+                Order.status.in_([OrderStatus.PENDING, OrderStatus.EXECUTED]),
+                Order.created_at >= start_utc,
+                Order.created_at < end_utc,
+            )
+            .scalar()
+        )
+
+        if buy_orders_today >= 5:
+            raise HTTPException(
+                status_code=403,
+                detail={
+                    "code": "BUY_LIMIT_REACHED",
+                    "message": "Free users can place only 5 buy orders per day. Upgrade to Premium for unlimited trading."
+                }
+            )
+
     # ====================================
     # 🔹 GET TRADES
     # ====================================
@@ -373,8 +452,11 @@ class TradeService:
             - float(portfolio.invested_amount)
         )
 
+        # Reserved cash (locked by pending BUY limit orders) is still user
+        # equity, so it counts toward net worth alongside available cash.
         net_worth = (
             float(portfolio.available_balance)
+            + float(portfolio.reserved_balance)
             + current_value
         )
 
@@ -454,6 +536,7 @@ class TradeService:
                 portfolio.available_balance = 100000.0
                 portfolio.invested_amount = 0.0
                 portfolio.realized_pnl = 0.0
+                portfolio.reserved_balance = 0.0
 
             else:
 
@@ -462,7 +545,8 @@ class TradeService:
                     total_balance=100000.0,
                     available_balance=100000.0,
                     invested_amount=0.0,
-                    realized_pnl=0.0
+                    realized_pnl=0.0,
+                    reserved_balance=0.0,
                 )
 
                 db.add(portfolio)
