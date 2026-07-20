@@ -14,9 +14,7 @@ import traceback
 
 
 class TradeService:
-
     def create_trade(self, db: Session, user_id: int, data):
-
         if get_market_status() != "OPEN":
             raise HTTPException(
                 status_code=400,
@@ -25,7 +23,6 @@ class TradeService:
 
         symbol = data.symbol.upper().strip()
 
-        # ⭐ Server decides execution price
         live_price = fetch_single_price(symbol)
 
         if live_price is None or live_price <= 0:
