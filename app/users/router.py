@@ -1,5 +1,6 @@
 
 from datetime import datetime
+import logging
 
 from sqlalchemy.orm import Session
 from starlette import status
@@ -17,7 +18,9 @@ from app.users.service import forgot_password, get_current_user
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.security import OAuth2PasswordRequestForm
 
-   
+
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
 
 @router.get("/me")
@@ -28,21 +31,29 @@ def get_me(current_user = Depends(get_current_user)):
 
 @router.post("/signup")
 def signup(user: schema.UserCreate, db: Session = Depends(get_db),):
+    logger.info("signup: request received for email=%s", user.email)
 
     existing = db.query(User).filter(User.email == user.email).first()
     if existing:
+        logger.info("signup: email already registered: %s", user.email)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Email already registered"
         )
 
-    new_user = service.create_user(
-        db,
-        user.name,
-        user.gender,
-        user.email,
-        user.password
-    )
+    try:
+        new_user = service.create_user(
+            db,
+            user.name,
+            user.gender,
+            user.email,
+            user.password
+        )
+    except Exception:
+        logger.exception("signup: create_user failed for email=%s", user.email)
+        raise
+
+    logger.info("signup: completed successfully for user_id=%s email=%s", new_user.id, new_user.email)
 
     return JSONResponse(
         status_code=status.HTTP_201_CREATED,

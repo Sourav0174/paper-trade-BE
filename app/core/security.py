@@ -2,6 +2,7 @@ from passlib.context import CryptContext
 from jose import JWTError, jwt
 from datetime import datetime, timedelta, timezone
 import os
+import logging
 from dotenv import load_dotenv
 from fastapi import HTTPException, status
 from app.users.models import User
@@ -10,6 +11,8 @@ from sqlalchemy.orm import Session
 from typing import Optional
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 30
 VERIFY_TOKEN_EXPIRE_HOURS = 24
@@ -35,6 +38,8 @@ def create_verification_token(
     token_type: str = "verify",
     password_updated_at: datetime | None = None
 ):
+    logger.info("Generating verification token: email=%s token_type=%s", email, token_type)
+
     if token_type == "verify":
         expire = datetime.now(timezone.utc) + timedelta(hours=24)
     else:
@@ -49,7 +54,14 @@ def create_verification_token(
         "pwd_at": int(password_updated_at.timestamp()) if password_updated_at else 0
     }
 
-    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    try:
+        token = jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+    except Exception:
+        logger.exception("Failed to generate verification token: email=%s token_type=%s", email, token_type)
+        raise
+
+    logger.info("Verification token generated successfully: email=%s token_type=%s", email, token_type)
+    return token
 
 
 # SECRET_KEY = "supersecretkey"
