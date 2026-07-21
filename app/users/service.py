@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 import os
+import logging
 
 from sqlalchemy.orm import Session
 from app.users.models import SubscriptionEnum, User
@@ -16,6 +17,8 @@ from app.core.email import send_password_reset_email, send_verification_email
 from google.oauth2 import id_token
 from google.auth.transport import requests
 
+
+logger = logging.getLogger(__name__)
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
 
@@ -109,6 +112,8 @@ def get_current_user(
 
 
 def create_user(db: Session, name: str, gender: str, email: str, password: str):
+    logger.info("create_user: starting signup for email=%s", email)
+
     hashed = hash_password(password)
 
     user = User(
@@ -125,11 +130,25 @@ def create_user(db: Session, name: str, gender: str, email: str, password: str):
     db.commit()
     db.refresh(user)
 
+   
+
     email_str = str(user.email)
 
-    token = create_verification_token(email_str)
-    # print("CREATED TOKEN:", token)
-    send_verification_email(email_str, token)
+    try:
+       
+        token = create_verification_token(email_str)
+        # print("CREATED TOKEN:", token)
+        logger.info("create_user: verification token generated for user_id=%s", user.id)
+
+    
+        send_verification_email(email_str, token)
+        
+    except Exception:
+        logger.exception(
+            "create_user: failed to generate token or send verification email for user_id=%s email=%s",
+            user.id, email_str
+        )
+        raise
 
     return user
 

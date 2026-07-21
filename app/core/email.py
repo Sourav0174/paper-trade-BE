@@ -1,9 +1,12 @@
 import os
 import smtplib
+import logging
 from email.message import EmailMessage
 from dotenv import load_dotenv
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 def get_env(name: str) -> str:
@@ -65,12 +68,23 @@ This link expires in 24 hours.
 
 
     try:
+        logger.info("SMTP connection starting: host=%s port=%s to=%s", SMTP_HOST, SMTP_PORT, to_email)
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            logger.info("SMTP connection established: host=%s port=%s", SMTP_HOST, SMTP_PORT)
+
+            logger.info("Starting TLS for SMTP connection")
             server.starttls()
+            logger.info("TLS started successfully")
+
+            logger.info("Attempting SMTP login as user=%s", SMTP_USER)
             server.login(SMTP_USER, SMTP_PASS)
+            logger.info("SMTP login successful")
+
             server.send_message(msg)
+            logger.info("Verification email sent successfully to %s", to_email)
 
     except Exception as e:
+        logger.exception("Email sending failed for to_email=%s: %s", to_email, e)
         print("Email sending failed:", e)
         raise
 

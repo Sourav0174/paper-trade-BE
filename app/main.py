@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import logging
 
 from fastapi import FastAPI
 from app.trades.router import router as trade_router
@@ -18,6 +19,11 @@ from app.stocks.router import router as stock_router
 from app.performance.router import router as performance_router
 from app.trades.scheduler import start_scheduler, shutdown_scheduler
 
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
 
 User.metadata.create_all(bind=engine)
 from app.trades.models import Trade
