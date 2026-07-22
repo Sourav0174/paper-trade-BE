@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from pydantic import BaseModel, EmailStr, field_validator, computed_field
 from datetime import datetime
 from pydantic import BaseModel
 from datetime import datetime
@@ -40,6 +40,7 @@ class UserResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
+    @computed_field
     @property
     def is_subscribed(self) -> bool:
         return self.subscription != SubscriptionEnum.FREE
