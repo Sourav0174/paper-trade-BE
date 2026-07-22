@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.get("/me")
+@router.get("/me", response_model=schema.UserResponse)
 def get_me(current_user = Depends(get_current_user)):
     return current_user
 
