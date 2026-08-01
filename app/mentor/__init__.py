@@ -4,7 +4,9 @@ AI Mentor Domain Module.
 Phase 1: Analytics Foundation.
 Phase 2: Deterministic Rule Engine.
 Phase 2.5: Insight Prioritizer & Mentor Summary.
-Contains FIFO trade reconstruction, deterministic analytics, modular rules, insight prioritization, and schemas.
+Phase 3A: AI Generation Layer.
+Phase 3B: Mentor Service Orchestration Layer.
+Contains FIFO trade reconstruction, deterministic analytics, modular rules, prioritizer, prompt builder, guardrails, generators, and service orchestrator.
 """
 
 from app.mentor.schema import (
@@ -12,12 +14,15 @@ from app.mentor.schema import (
     ClosedPosition,
     ClosedTradeChunk,
     Confidence,
+    DailyMentorReview,
     FifoReconstructionResult,
     HoldingItem,
     Insight,
     InsightCategory,
+    MentorResponse,
     MentorSummary,
     OpenPositionState,
+    PromptContext,
     RuleResult,
     Severity,
     TradeInput,
@@ -40,6 +45,15 @@ from app.mentor.rule_engine import (
     StopLossDisciplineRule,
 )
 from app.mentor.prioritizer import InsightPrioritizer
+from app.mentor.prompt_builder import PromptBuilder
+from app.mentor.template_generator import TemplateGenerator
+from app.mentor.response_validator import ResponseValidator, ValidationResult
+from app.mentor.mentor_generator import (
+    BaseMentorGenerator,
+    GeminiGenerator,
+    MentorGenerator,
+)
+from app.mentor.service import MentorService
 
 __all__ = [
     "TradeInput",
@@ -57,6 +71,9 @@ __all__ = [
     "RuleResult",
     "TradingGrade",
     "MentorSummary",
+    "PromptContext",
+    "MentorResponse",
+    "DailyMentorReview",
     "FIFOReconstructor",
     "AnalyticsEngine",
     "BaseRule",
@@ -71,4 +88,12 @@ __all__ = [
     "StopLossDisciplineRule",
     "RuleEngine",
     "InsightPrioritizer",
+    "PromptBuilder",
+    "TemplateGenerator",
+    "ResponseValidator",
+    "ValidationResult",
+    "BaseMentorGenerator",
+    "GeminiGenerator",
+    "MentorGenerator",
+    "MentorService",
 ]

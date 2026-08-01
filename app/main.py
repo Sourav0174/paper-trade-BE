@@ -4,7 +4,7 @@ import logging
 from fastapi import FastAPI
 from app.trades.router import router as trade_router
 from app.database import engine
-from sqlalchemy import text
+
 from app.users.models import User
 from app.users.router import router as user_router
 from app.market.router import router as market_router
@@ -17,18 +17,21 @@ from app.trades.router import router as trade_router
 from app.market.router import router as market_router
 from app.stocks.router import router as stock_router
 from app.performance.router import router as performance_router
+from app.mentor.router import router as mentor_router
 from app.trades.scheduler import start_scheduler, shutdown_scheduler
 
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
-)
+# logging.basicConfig(
+#     level=logging.INFO,
+#     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+# )
 
 User.metadata.create_all(bind=engine)
 from app.trades.models import Trade
+from app.mentor.models import MentorReview
 
 Trade.metadata.create_all(bind=engine)
+MentorReview.metadata.create_all(bind=engine)
 
 
 @asynccontextmanager
@@ -47,6 +50,7 @@ app.include_router(stocks_router)
 app.include_router(subscription_router)
 app.include_router(chart_router)
 app.include_router(performance_router)
+app.include_router(mentor_router)
 
 @app.get("/")
 def root():

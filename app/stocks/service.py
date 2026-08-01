@@ -190,6 +190,52 @@ def fetch_real_price(symbol: str):
         logger.exception("Failed fetching %s", symbol)
         return 0.0, 0.0
 
+def extract_ticker_dataframe(tickers: pd.DataFrame, symbol: str) -> pd.DataFrame:
+    """
+    Extracts and normalizes a 2D DataFrame for a specific symbol from yfinance output.
+    Handles MultiIndex (ticker in level 0 or level 1) and single-level Index layouts.
+    """
+    if tickers is None or tickers.empty:
+        return pd.DataFrame()
+
+    ticker = f"{symbol}.NS"
+    target_upper = ticker.upper()
+    symbol_upper = symbol.upper()
+
+    if isinstance(tickers.columns, pd.MultiIndex):
+        l0_str = [str(x).upper() for x in tickers.columns.get_level_values(0)]
+        l1_str = [str(x).upper() for x in tickers.columns.get_level_values(1)]
+
+        # Check if ticker matches in level 0
+        for orig, val in zip(tickers.columns.get_level_values(0), l0_str):
+            if val in (target_upper, symbol_upper):
+                sub = tickers[orig]
+                return sub if isinstance(sub, pd.DataFrame) else sub.to_frame()
+
+        # Check if ticker matches in level 1
+        for orig, val in zip(tickers.columns.get_level_values(1), l1_str):
+            if val in (target_upper, symbol_upper):
+                sub = tickers.xs(orig, axis=1, level=1)
+                return sub if isinstance(sub, pd.DataFrame) else sub.to_frame()
+
+    # Single-level index or non-MultiIndex
+    if "Close" in tickers.columns or "close" in tickers.columns:
+        return tickers
+
+    # Fallback for tuple columns or prefix string columns
+    renamed = {}
+    for c in tickers.columns:
+        c_str = str(c)
+        if ("Close" in c_str or "close" in c_str) and (symbol_upper in c_str.upper()):
+            renamed[c] = "Close"
+        elif ("Open" in c_str or "open" in c_str) and (symbol_upper in c_str.upper()):
+            renamed[c] = "Open"
+    if renamed:
+        return tickers.rename(columns=renamed)
+
+    return pd.DataFrame()
+
+
 def fetch_multiple_prices(
     symbols: List[str],
 ) -> Dict[str, Tuple[float, float, float]]:
@@ -204,11 +250,8 @@ def fetch_multiple_prices(
         )
     }
     """
-
     if not symbols:
         return {}
-    
-
 
     try:
         tickers = yf.download(
@@ -220,98 +263,46 @@ def fetch_multiple_prices(
             progress=False,
         )
 
-        print("=" * 80)
-        print("Downloaded columns:")
-        print(tickers.columns) # type: ignore
-
-        if isinstance(tickers.columns, pd.MultiIndex): # type: ignore
-            print("Level 0:", list(tickers.columns.levels[0])) # type: ignore
-            print("Level 1:", list(tickers.columns.levels[1])) # type: ignore
-
-        print("=" * 80)
-
-
-        expected = {f"{s}.NS" for s in symbols}
-
-        if isinstance(tickers.columns, pd.MultiIndex): # type: ignore
-            if "Ticker" in tickers.columns.names: # type: ignore
-                available = set(tickers.columns.get_level_values("Ticker")) # type: ignore
-            else:
-                available = set(tickers.columns.get_level_values(0)) | set(tickers.columns.get_level_values(1)) # type: ignore
-        else:
-            available = set()
-
-        print("Missing:", expected - available)
-
         if tickers is None or len(tickers) == 0:
-            return {
-                symbol: (0.0, 0.0, 0.0)
-                for symbol in symbols
-            }
+            return {symbol: (0.0, 0.0, 0.0) for symbol in symbols}
 
     except Exception as e:
         logger.exception("DOWNLOAD FAILED: %s", e)
-
-        return {
-            symbol: (0.0, 0.0, 0.0)
-            for symbol in symbols
-        }
+        return {symbol: (0.0, 0.0, 0.0) for symbol in symbols}
 
     result: Dict[str, Tuple[float, float, float]] = {}
 
     for symbol in symbols:
-
         try:
+            data = extract_ticker_dataframe(tickers, symbol)
+            if data.empty or "Close" not in data.columns:
+                raise ValueError(f"No Close price data for {symbol}")
 
-            if len(symbols) == 1:
-                data = tickers
+            close_col = data["Close"]
+            if isinstance(close_col, pd.DataFrame):
+                close_col = close_col.iloc[:, 0]
 
-            else:
-                if isinstance(
-                    tickers.columns,
-                    pd.MultiIndex,
-                ):
-                    ticker = f"{symbol}.NS"
+            close_series = close_col.dropna()
+            if close_series.empty:
+                raise ValueError(f"Empty Close series for {symbol}")
 
-                    if ticker in tickers.columns.get_level_values(0):
-                        data = tickers[ticker]
-                    elif ticker in tickers.columns.get_level_values(1):
-                        data = tickers.xs(ticker, axis=1, level=1)
-                    else:
-                        raise KeyError(f"{ticker} not found")
-                else:
-                    data = tickers
+            current_price = round(safe_float(close_series.iloc[-1]), 2)
 
-            if data.empty:
-                raise ValueError("No data")
-
-            current_price = round(
-                safe_float(data["Close"].iloc[-1]),
-                2,
-            )
-
-            if len(data) >= 2:
+            if len(close_series) >= 2:
                 previous_close = round(
-                    safe_float(
-                        data["Close"].iloc[-2],
-                        current_price,
-                    ),
+                    safe_float(close_series.iloc[-2], current_price),
                     2,
                 )
             else:
                 previous_close = current_price
 
-            change_value = round(
-                current_price - previous_close,
-                2,
-            )
+            change_value = round(current_price - previous_close, 2)
 
             if previous_close == 0:
                 change_percent = 0.0
             else:
                 change_percent = round(
-                    ((current_price - previous_close) / previous_close)
-                    * 100,
+                    ((current_price - previous_close) / previous_close) * 100,
                     2,
                 )
 
@@ -325,12 +316,7 @@ def fetch_multiple_prices(
 
         except Exception:
             logger.exception("Failed to process price data for %s", symbol)
-
-            result[symbol] = (
-                0.0,
-                0.0,
-                0.0,
-            )
+            result[symbol] = (0.0, 0.0, 0.0)
 
     return result
 

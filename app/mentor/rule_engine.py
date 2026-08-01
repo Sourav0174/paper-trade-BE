@@ -1,11 +1,4 @@
-"""
-Deterministic Rule Engine for AI Mentor.
 
-Implements modular behavioral rule classes to evaluate trading patterns,
-risk exposures, execution habits, and statistical metrics.
-
-Returns prioritized structured Insight objects without using any AI or LLM.
-"""
 
 from abc import ABC, abstractmethod
 from datetime import timedelta

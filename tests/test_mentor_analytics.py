@@ -214,6 +214,21 @@ class TestMentorAnalytics(unittest.TestCase):
         self.assertEqual(metrics.risk_reward_ratio, 0.0)
         self.assertEqual(metrics.portfolio_concentration_hhi, 0.0)
 
+    def test_analytics_metrics_with_holdings_keyword_argument(self):
+        """Test AnalyticsEngine.calculate_metrics accepts holdings keyword argument."""
+        holdings = [
+            HoldingItem(symbol="RELIANCE", quantity=10, avg_price=100.0, current_price=120.0, current_value=1200.0)
+        ]
+        metrics = AnalyticsEngine.calculate_metrics(
+            closed_positions=[],
+            total_raw_trades=1,
+            holdings=holdings,
+            total_portfolio_value=10000.0,
+        )
+        self.assertEqual(metrics.total_trades_count, 1)
+        self.assertEqual(metrics.max_position_sizing_pct, 12.0)
+        self.assertEqual(metrics.total_unrealized_pnl, 200.0)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -33,6 +33,7 @@ class AnalyticsEngine:
         closed_positions: List[ClosedPosition],
         total_raw_trades: int = 0,
         current_holdings: Optional[List[HoldingItem]] = None,
+        holdings: Optional[List[HoldingItem]] = None,
         total_portfolio_value: float = 100000.0,
         open_positions: Optional[List[OpenPositionState]] = None,
     ) -> AnalyticsMetrics:
@@ -43,12 +44,14 @@ class AnalyticsEngine:
             closed_positions: List of reconstructed ClosedPosition objects.
             total_raw_trades: Total count of raw execution trades.
             current_holdings: Current active user holdings for HHI and sizing calculations.
+            holdings: Alias for current_holdings.
             total_portfolio_value: Total portfolio net worth (cash + current holding value).
             open_positions: List of reconstructed OpenPositionState objects for unrealized P&L.
 
         Returns:
             AnalyticsMetrics instance populated with computed metrics.
         """
+        active_holdings = holdings if holdings is not None else current_holdings
         closed_count = len(closed_positions)
 
         winning_positions = [p for p in closed_positions if p.is_win]
@@ -77,10 +80,10 @@ class AnalyticsEngine:
             closed_positions, winning_positions, losing_positions
         )
 
-        hhi = cls._calc_portfolio_hhi(current_holdings, total_portfolio_value)
-        max_sizing, avg_sizing = cls._calc_position_sizing(current_holdings, total_portfolio_value)
+        hhi = cls._calc_portfolio_hhi(active_holdings, total_portfolio_value)
+        max_sizing, avg_sizing = cls._calc_position_sizing(active_holdings, total_portfolio_value)
 
-        unrealized_pnl = cls._calc_unrealized_pnl(open_positions, current_holdings)
+        unrealized_pnl = cls._calc_unrealized_pnl(open_positions, active_holdings)
 
         return AnalyticsMetrics(
             total_trades_count=total_raw_trades,
@@ -259,31 +262,20 @@ class AnalyticsEngine:
         open_positions: Optional[List[OpenPositionState]],
         holdings: Optional[List[HoldingItem]]
     ) -> Optional[float]:
-        """Calculates total unrealized P&L from active open position states and market holdings."""
-        if holdings:
-            total_unrealized = 0.0
-            has_valid_holding = False
-            for item in holdings:
-                if item.quantity > 0 and item.avg_price > 0:
-                    invested = item.quantity * item.avg_price
-                    unrealized = item.current_value - invested
-                    total_unrealized += unrealized
-                    has_valid_holding = True
-            if has_valid_holding:
-                return round(total_unrealized, 2)
+        """Calculates total unrealized P&L from active market holdings."""
+        if not holdings:
+            return None
 
-        if open_positions and holdings:
-            price_map = {item.symbol: item.current_price for item in holdings}
-            total_unrealized = 0.0
-            has_valid_pos = False
-            for open_pos in open_positions:
-                curr_price = price_map.get(open_pos.symbol)
-                if curr_price is not None:
-                    curr_val = open_pos.total_quantity * curr_price
-                    pnl = curr_val - open_pos.total_invested_amount
-                    total_unrealized += pnl
-                    has_valid_pos = True
-            if has_valid_pos:
-                return round(total_unrealized, 2)
+        total_unrealized = 0.0
+        has_valid_holding = False
+        for item in holdings:
+            if item.quantity > 0 and item.avg_price > 0:
+                invested = item.quantity * item.avg_price
+                unrealized = item.current_value - invested
+                total_unrealized += unrealized
+                has_valid_holding = True
+
+        if has_valid_holding:
+            return round(total_unrealized, 2)
 
         return None
