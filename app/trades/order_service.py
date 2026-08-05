@@ -82,6 +82,12 @@ class OrderService:
         db.refresh(order)
         return order
 
+    @staticmethod
+    def is_limit_fillable(trade_type: TradeType, limit_price: float, live_price: float) -> bool:
+        if trade_type == TradeType.BUY:
+            return live_price <= limit_price
+        return live_price >= limit_price
+
     def _create_limit_order(
         self,
         db: Session,
@@ -133,7 +139,21 @@ class OrderService:
             expires_at=self._market_close_today_utc(),
         )
         db.add(order)
-        db.commit()
+        db.flush()
+
+        if self.is_limit_fillable(data.trade_type, data.limit_price, live_price):
+            trade_service.execute_order(
+                db,
+                user_id,
+                symbol,
+                data.quantity,
+                data.trade_type,
+                live_price,
+                order=order,
+            )
+        else:
+            db.commit()
+
         db.refresh(order)
 
         return order

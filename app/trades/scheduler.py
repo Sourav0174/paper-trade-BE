@@ -5,10 +5,10 @@ from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.database import SessionLocal
-from app.stocks.service import fetch_single_price, get_market_status
+from app.stocks.service import fetch_multiple_prices, fetch_single_price, get_market_status
 from app.trades.enums import OrderStatus, OrderType, TradeType
 from app.trades.models import Order
-from app.trades.order_service import order_service
+from app.trades.order_service import OrderService, order_service
 
 logger = logging.getLogger(__name__)
 
@@ -23,9 +23,9 @@ _scheduler: AsyncIOScheduler | None = None
 
 
 def _is_fillable(order: Order, live_price: float) -> bool:
-    if order.trade_type == TradeType.BUY:
-        return live_price <= order.limit_price
-    return live_price >= order.limit_price
+    if order.limit_price is None:
+        return False
+    return OrderService.is_limit_fillable(order.trade_type, order.limit_price, live_price)
 
 
 def execute_pending_orders_job() -> None:
@@ -50,12 +50,30 @@ def execute_pending_orders_job() -> None:
             .all()
         )
 
+        if not orders:
+            return
+
+        unique_symbols = list({order.symbol for order in orders})
+        price_map: dict[str, float] = {}
+
+        try:
+            fetched_prices = fetch_multiple_prices(unique_symbols)
+            for sym, (price, _, _) in fetched_prices.items():
+                if price > 0:
+                    price_map[sym] = price
+        except Exception:
+            logger.exception("Failed batch fetching prices for pending orders")
+
         for order in orders:
             try:
-                live_price = fetch_single_price(order.symbol)
+                live_price = price_map.get(order.symbol)
 
                 if live_price is None or live_price <= 0:
-                    continue
+                    live_price = fetch_single_price(order.symbol)
+                    if live_price is not None and live_price > 0:
+                        price_map[order.symbol] = live_price
+                    else:
+                        continue
 
                 if _is_fillable(order, live_price):
                     order_service.execute_pending_order(db, order.id, live_price)
