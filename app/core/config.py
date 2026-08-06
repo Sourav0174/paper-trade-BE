@@ -19,7 +19,7 @@ class Settings(BaseSettings):
     SMTP_PASS: str
     FROM_EMAIL: str
 
-    # API
+    
     TWELVE_DATA_API_KEY: str
 
     # TWILIO
