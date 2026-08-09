@@ -1,5 +1,3 @@
-
-
 from abc import ABC, abstractmethod
 from datetime import timedelta
 from typing import List, Optional
@@ -67,7 +65,6 @@ class RevengeTradingRule(BaseRule):
         revenge_details = []
 
         for loss_pos in losing_positions:
-            # Check if any new position opened within 15 minutes of loss_pos closing
             for next_pos in sorted_positions:
                 if next_pos.position_id == loss_pos.position_id:
                     continue
@@ -101,12 +98,6 @@ class RevengeTradingRule(BaseRule):
                         "losing_positions_count": metrics.losing_positions_count,
                         "details": revenge_details,
                     },
-                    coaching_message=(
-                        "You executed new trades immediately after suffering a loss. Emotional "
-                        "re-entries often lead to compounding losses. Take a mandatory 15-minute "
-                        "breather after any losing trade to reset your mindset."
-                    ),
-                    action_item="Institute a strict 15-minute cooling-off period after closing any losing trade.",
                 ),
             )
 
@@ -130,10 +121,8 @@ class FOMOBuyingRule(BaseRule):
         if not closed_positions:
             return RuleResult(is_triggered=False)
 
-        # Flag positions where buy price was significantly higher than recent average entry
         fomo_positions = []
         for pos in closed_positions:
-            # High buy price variance within position chunks or rapid entry
             if pos.realized_pnl_percent < -3.0 and pos.holding_duration_minutes < 30.0:
                 fomo_positions.append(pos)
 
@@ -155,11 +144,6 @@ class FOMOBuyingRule(BaseRule):
                         "fomo_positions_count": fomo_count,
                         "total_positions_count": metrics.closed_positions_count,
                     },
-                    coaching_message=(
-                        "Buying extended stocks at intraday peaks often leads to immediate drawdown. "
-                        "Avoid buying market orders on green spikes; wait for healthy pullbacks."
-                    ),
-                    action_item="Use limit orders below market price instead of market orders on momentum candles.",
                 ),
             )
 
@@ -197,11 +181,6 @@ class PositionSizingRule(BaseRule):
                         "max_position_sizing_pct": max_sizing,
                         "avg_position_sizing_pct": metrics.avg_position_sizing_pct,
                     },
-                    coaching_message=(
-                        f"Your largest position constitutes {max_sizing:.1f}% of your portfolio. "
-                        "Concentrating too much capital in a single stock exposes your portfolio to severe drawdown."
-                    ),
-                    action_item="Cap single-stock allocation to 5-10% of total portfolio net worth.",
                 ),
             )
 
@@ -252,12 +231,6 @@ class HoldingDurationAsymmetryRule(BaseRule):
                         "avg_losing_duration_minutes": metrics.avg_losing_duration_minutes,
                         "avg_winning_duration_minutes": metrics.avg_winning_duration_minutes,
                     },
-                    coaching_message=(
-                        f"You hold losing trades {ratio:.1f}x longer than winners. "
-                        "Classic trader bias is hoping losers come back while cutting winners early. "
-                        "Cut losses decisively and let your winners run."
-                    ),
-                    action_item="Set a hard time-stop or price stop-loss to exit non-performing trades promptly.",
                 ),
             )
 
@@ -301,12 +274,6 @@ class RiskRewardRatioRule(BaseRule):
                         "average_profit": metrics.average_profit,
                         "average_loss": metrics.average_loss,
                     },
-                    coaching_message=(
-                        f"Your average loss (₹{metrics.average_loss:.2f}) exceeds your average win "
-                        f"(₹{metrics.average_profit:.2f}). This requires an extremely high win rate to stay profitable. "
-                        "Aim for at least a 1.5:1 profit-to-loss target on entries."
-                    ),
-                    action_item="Target trades with at least 1.5x potential upside relative to your stop-loss distance.",
                 ),
             )
         elif rrr >= 2.0:
@@ -324,11 +291,6 @@ class RiskRewardRatioRule(BaseRule):
                         "average_profit": metrics.average_profit,
                         "average_loss": metrics.average_loss,
                     },
-                    coaching_message=(
-                        f"Outstanding execution! Your average profit (₹{metrics.average_profit:.2f}) is "
-                        f"{rrr:.2f}x your average loss (₹{metrics.average_loss:.2f}). This provides a strong statistical edge."
-                    ),
-                    action_item="Maintain your current disciplined risk-to-reward entry criteria.",
                 ),
             )
 
@@ -365,11 +327,6 @@ class ConcentrationRiskRule(BaseRule):
                     metrics_context={
                         "portfolio_concentration_hhi": hhi,
                     },
-                    coaching_message=(
-                        f"Your portfolio concentration index is {hhi:.0f} (values > 1,800 indicate high concentration). "
-                        "Spreading capital across multiple holdings protects you against stock-specific shocks."
-                    ),
-                    action_item="Diversify holdings across at least 4-6 non-correlated assets or sectors.",
                 ),
             )
 
@@ -407,11 +364,6 @@ class OvertradingRule(BaseRule):
                         "total_trades_count": trade_count,
                         "closed_positions_count": metrics.closed_positions_count,
                     },
-                    coaching_message=(
-                        f"You executed {trade_count} trades. Overtrading increases transaction costs, "
-                        "induces mental fatigue, and usually lowers trade selection quality."
-                    ),
-                    action_item="Set a maximum daily trade limit (e.g. 3-5 high-quality trades per day).",
                 ),
             )
 
@@ -449,11 +401,6 @@ class DrawdownRule(BaseRule):
                         "max_drawdown_pct": dd_pct,
                         "max_drawdown_amount": metrics.max_drawdown_amount,
                     },
-                    coaching_message=(
-                        f"Your portfolio experienced a peak-to-trough drawdown of {dd_pct:.1f}%. "
-                        "Protecting remaining capital is critical. Reduce trade position sizing until performance stabilizes."
-                    ),
-                    action_item="Reduce trade sizing by 50% until equity curve recovers.",
                 ),
             )
 
@@ -495,11 +442,6 @@ class StopLossDisciplineRule(BaseRule):
                         "unmanaged_losses_count": unmanaged_count,
                         "worst_loss_pct": min(p.realized_pnl_percent for p in unmanaged_losses),
                     },
-                    coaching_message=(
-                        f"You had {unmanaged_count} trade(s) with losses worse than -5.0%. "
-                        "Allowing losses to run deep destroys long-term expectancy. Always respect your stop-loss."
-                    ),
-                    action_item="Set an explicit stop-loss order immediately upon position entry.",
                 ),
             )
 
@@ -508,7 +450,7 @@ class StopLossDisciplineRule(BaseRule):
 
 class RuleEngine:
     """
-    Orchestrates execution of all modular rules and returns prioritized insights.
+    Orchestrates execution of all modular rules and returns prioritized insights containing facts/evidence only.
     """
 
     SEVERITY_ORDER = {
@@ -569,7 +511,6 @@ class RuleEngine:
             if result.is_triggered and result.insight:
                 insights.append(result.insight)
 
-        # Sort insights by Severity descending, then Category descending
         insights.sort(
             key=lambda item: (
                 self.SEVERITY_ORDER.get(item.severity, 0),

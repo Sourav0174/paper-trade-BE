@@ -16,10 +16,15 @@ class BaseAIProvider(ABC):
         user_prompt: str,
         response_mime_type: Optional[str] = "application/json",
     ) -> str:
-        """
-        Executes generation request and returns raw string response.
+        """Executes generation request synchronously."""
+        pass
 
-        Raises:
-            AIException subclasses on failure.
-        """
+    @abstractmethod
+    async def generate_async(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        response_mime_type: Optional[str] = "application/json",
+    ) -> str:
+        """Executes generation request asynchronously."""
         pass

@@ -265,6 +265,49 @@ class TestMentorRuleEngine(unittest.TestCase):
         severities = [i.severity for i in insights]
         self.assertEqual(severities[0], Severity.CRITICAL)
 
+    def test_rule_engine_produces_facts_only_zero_coaching_text(self):
+        """Proves RuleEngine detects rules (revenge, overtrading, sizing, concentration) with facts ONLY and ZERO coaching text."""
+        t1 = datetime(2026, 8, 1, 10, 0, 0)
+        t2 = datetime(2026, 8, 1, 10, 30, 0)
+        t3 = datetime(2026, 8, 1, 10, 35, 0)
+
+        pos_loss = ClosedPosition(
+            position_id="p1", symbol="INFY", total_quantity=10, weighted_avg_buy_price=100.0,
+            weighted_avg_sell_price=80.0, realized_pnl=-200.0, realized_pnl_percent=-20.0,
+            open_timestamp=t1, close_timestamp=t2, holding_duration_minutes=30.0,
+            is_win=False, is_loss=True, is_breakeven=False
+        )
+        pos_revenge = ClosedPosition(
+            position_id="p2", symbol="RELIANCE", total_quantity=10, weighted_avg_buy_price=200.0,
+            weighted_avg_sell_price=210.0, realized_pnl=100.0, realized_pnl_percent=5.0,
+            open_timestamp=t3, close_timestamp=t3 + timedelta(minutes=20), holding_duration_minutes=20.0,
+            is_win=True, is_loss=False, is_breakeven=False
+        )
+
+        metrics = self.base_metrics.model_copy(update={
+            "max_position_sizing_pct": 30.0,       # Excessive Position Sizing
+            "portfolio_concentration_hhi": 2500.0,  # Poor Diversification
+            "total_trades_count": 16,               # Overtrading
+            "losing_positions_count": 1,
+        })
+
+        engine = RuleEngine()
+        insights = engine.evaluate_all(metrics, closed_positions=[pos_loss, pos_revenge])
+
+        # Verify all 4 target rules triggered
+        triggered_rules = {i.rule_id for i in insights}
+        self.assertIn("MISTAKE_REVENGE_TRADING", triggered_rules)
+        self.assertIn("MISTAKE_OVERTRADING", triggered_rules)
+        self.assertIn("RISK_POSITION_SIZING", triggered_rules)
+        self.assertIn("RISK_CONCENTRATION_HHI", triggered_rules)
+
+        # CRITICAL PROOF: Verify EVERY insight contains ZERO coaching text
+        for insight in insights:
+            self.assertEqual(insight.coaching_message, "", f"Rule {insight.rule_id} leaked coaching_message!")
+            self.assertEqual(insight.action_item, "", f"Rule {insight.rule_id} leaked action_item!")
+            self.assertIsNotNone(insight.metrics_context)
+            self.assertGreater(len(insight.metrics_context), 0)
+
 
 if __name__ == "__main__":
     unittest.main()

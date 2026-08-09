@@ -77,6 +77,11 @@ class InsightPrioritizer:
             "trading_health_score": health_score,
             "win_rate_pct": metrics.win_rate_pct,
             "profit_factor": metrics.profit_factor,
+            "risk_reward_ratio": metrics.risk_reward_ratio,
+            "max_drawdown_pct": metrics.max_drawdown_pct,
+            "holding_duration_ratio": metrics.holding_duration_ratio,
+            "max_position_sizing_pct": metrics.max_position_sizing_pct,
+            "portfolio_concentration_hhi": metrics.portfolio_concentration_hhi,
             "total_realized_pnl": metrics.total_realized_pnl,
             "total_trades_count": metrics.total_trades_count,
             "closed_positions_count": metrics.closed_positions_count,
@@ -213,8 +218,6 @@ class InsightPrioritizer:
                     "max_position_sizing_pct": sizing_insight.metrics_context.get("max_position_sizing_pct"),
                     "portfolio_concentration_hhi": hhi_insight.metrics_context.get("portfolio_concentration_hhi"),
                 },
-                coaching_message="Reduce single-stock allocation below 15% and diversify capital across uncorrelated sectors.",
-                action_item="Reduce maximum position size below 15% and spread capital across at least 4-6 sectors.",
             )
 
             # Filter out individual sizing and hhi insights, add merged insight

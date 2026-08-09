@@ -11,7 +11,7 @@ from app.ai.exceptions import (
 )
 from app.ai.settings import AISettings, get_ai_settings
 from app.ai.providers.base import BaseAIProvider
-from app.ai.providers.gemini import GeminiProvider
+from app.ai.providers.openrouter import OpenRouterProvider
 from app.ai.client import AIClient
 
 __all__ = [
@@ -23,6 +23,6 @@ __all__ = [
     "AISettings",
     "get_ai_settings",
     "BaseAIProvider",
-    "GeminiProvider",
+    "OpenRouterProvider",
     "AIClient",
 ]
