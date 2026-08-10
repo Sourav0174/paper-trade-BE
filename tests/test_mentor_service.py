@@ -326,6 +326,59 @@ class TestMentorService(unittest.IsolatedAsyncioTestCase):
         self.db.query().filter().update.assert_called_once_with({"stale": True})
         self.db.commit.assert_called_once()
 
+    async def test_legacy_cached_review_schema_invalidation_and_self_healing(self):
+        """Test that legacy cached response_json missing required fields self-heals by generating fresh review."""
+        self.db.query().filter().first.return_value = self.mock_user
+        self.db.query().filter().count.return_value = 0
+        self.db.query().filter().all.return_value = []
+
+        # Create mock cached review with legacy incompatible response_json (lacking next_focus)
+        mock_legacy_cached_review = MagicMock()
+        mock_legacy_cached_review.stale = False
+        mock_legacy_cached_review.trade_count = 0
+        mock_legacy_cached_review.last_trade_id = None
+        mock_legacy_cached_review.generated_at = datetime.now(timezone.utc)
+        mock_legacy_cached_review.response_json = {
+            "headline": "Legacy Review",
+            "mentor_message": "Legacy mentor message.",
+            "key_takeaway": "Legacy key takeaway.",
+            "_coaching_source": "ai",
+            # "next_focus" is MISSING!
+        }
+        mock_legacy_cached_review.summary_json = {
+            "trading_health_score": 100.0,
+            "grade": "MASTER",
+            "portfolio_summary": {"trading_health_score": 100.0, "total_trades_count": 0},
+            "top_strengths": [],
+            "top_mistakes": [],
+            "top_risks": [],
+            "action_items": [],
+            "improvement_focus": "Discipline",
+            "all_insights": [],
+        }
+
+        self.db.query().filter().order_by().first.return_value = mock_legacy_cached_review
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "headline": "Self Healed Review",
+                    "mentor_message": "Fresh mentor message.",
+                    "key_takeaway": "Fresh takeaway.",
+                    "risk_warning": None,
+                    "next_focus": "Execution",
+                }
+            )
+        )
+
+        service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=False)
+
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertEqual(review.coaching_response.headline, "Self Healed Review")
+        self.assertEqual(review.coaching_response.next_focus, "Execution")
+
 
 if __name__ == "__main__":
     unittest.main()

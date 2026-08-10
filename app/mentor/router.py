@@ -1,6 +1,7 @@
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException, status
+import pydantic
 from sqlalchemy.orm import Session
 
 from app.ai.exceptions import (
@@ -22,6 +23,12 @@ router = APIRouter(prefix="/mentor", tags=["AI Mentor"])
 
 
 def _handle_mentor_exception(e: Exception) -> None:
+    if isinstance(e, pydantic.ValidationError):
+        logger.error("AI Mentor validation error: %s", e)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI Mentor coaching service encountered an error. Please try again.",
+        )
     if isinstance(e, ValueError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))
     if isinstance(e, AIRateLimitError):

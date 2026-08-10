@@ -155,11 +155,12 @@ RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
             and cached_review.response_json.get("_coaching_source") == "ai"
         )
 
+        REQUIRED_COACHING_FIELDS = {"headline", "mentor_message", "key_takeaway", "next_focus"}
+
         is_new_schema = (
             cached_review is not None
             and isinstance(cached_review.response_json, dict)
-            and "mentor_message" in cached_review.response_json
-            and "key_takeaway" in cached_review.response_json
+            and REQUIRED_COACHING_FIELDS.issubset(cached_review.response_json.keys())
         )
 
         is_cache_valid = (
