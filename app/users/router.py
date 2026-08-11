@@ -167,10 +167,4 @@ def delete_account(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    db.delete(current_user)
-    db.commit()
-
-    return {
-        "success": True,
-        "message": "Account deleted successfully"
-    }
+    return service.delete_user(db, current_user.id)
