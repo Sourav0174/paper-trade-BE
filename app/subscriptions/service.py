@@ -125,6 +125,42 @@ ALLOWED_PRODUCT_IDS = {
 ACCEPTED_PAYMENT_STATES = {1, 2}
 
 
+def _verify_google_play_purchase(product_id: str, purchase_token: str) -> tuple[dict | None, dict | None]:
+    """
+    Calls Google Play Developer API and validates the subscription response.
+    Returns (response_dict, None) on success, or (None, error_dict) on failure.
+    Preserves Issue #1 paymentState fix.
+    """
+    try:
+        service = get_android_publisher()
+        response = (
+            service.purchases()
+            .subscriptions()
+            .get(packageName=PACKAGE_NAME, subscriptionId=product_id, token=purchase_token)
+            .execute()
+        )
+    except HttpError as e:
+        logger.warning("Google Play verification failed with status %s", getattr(e.resp, "status", None))
+        return None, {"success": False, "message": "Could not verify purchase with Google Play"}
+    except Exception:
+        logger.exception("Unexpected error during Google Play verification")
+        return None, {"success": False, "message": "Verification failed, please try again"}
+
+    expiry_time_millis = response.get("expiryTimeMillis")
+    if not expiry_time_millis:
+        return None, {"success": False, "message": "Invalid subscription data"}
+
+    expiry_datetime = datetime.fromtimestamp(int(expiry_time_millis) / 1000, tz=timezone.utc)
+    if expiry_datetime <= datetime.now(timezone.utc):
+        return None, {"success": False, "message": "Subscription has expired"}
+
+    payment_state = response.get("paymentState")
+    if payment_state is not None and payment_state not in ACCEPTED_PAYMENT_STATES:
+        return None, {"success": False, "message": "Payment not completed"}
+
+    return response, None
+
+
 def verify_subscription_purchase(
     db: Session,
     user: User,
@@ -143,34 +179,16 @@ def verify_subscription_purchase(
         logger.warning("Purchase token already linked to another account")
         return {"success": False, "message": "This purchase is already linked to another account"}
 
-    try:
-        service = get_android_publisher()
-        response = (
-            service.purchases()
-            .subscriptions()
-            .get(packageName=PACKAGE_NAME, subscriptionId=product_id, token=purchase_token)
-            .execute()
-        )
-    except HttpError as e:
-        logger.warning("Google Play verification failed with status %s", getattr(e.resp, "status", None))
-        return {"success": False, "message": "Could not verify purchase with Google Play"}
-    except Exception:
-        logger.exception("Unexpected error during Google Play verification")
-        return {"success": False, "message": "Verification failed, please try again"}
-
-    if response.get("paymentState") not in ACCEPTED_PAYMENT_STATES:
-        return {"success": False, "message": "Payment not completed"}
+    response, error = _verify_google_play_purchase(product_id, purchase_token)
+    if error:
+        return error
 
     expiry_time_millis = response.get("expiryTimeMillis")
-    if not expiry_time_millis:
-        return {"success": False, "message": "Invalid subscription data"}
-
     expiry_datetime = datetime.fromtimestamp(int(expiry_time_millis) / 1000, tz=timezone.utc)
-    if expiry_datetime <= datetime.now(timezone.utc):
-        return {"success": False, "message": "Subscription has expired"}
 
     if response.get("acknowledgementState") == 0:
         try:
+            service = get_android_publisher()
             service.purchases().subscriptions().acknowledge(
                 packageName=PACKAGE_NAME,
                 subscriptionId=product_id,
@@ -193,3 +211,57 @@ def verify_subscription_purchase(
     logger.info("Subscription verified for user %s", user.id)
 
     return {"success": True, "message": "Subscription verified", "expiry": expiry_datetime}
+
+
+def restore_subscription_purchase(
+    db: Session,
+    user: User,
+    product_id: str,
+    purchase_token: str,
+):
+    if product_id not in ALLOWED_PRODUCT_IDS:
+        return {"success": False, "message": "Invalid product ID"}
+
+    # 1. Verify with Google Play FIRST as the source of truth
+    response, error = _verify_google_play_purchase(product_id, purchase_token)
+    if error:
+        return error
+
+    # 2. Check local DB ownership
+    linked_to_other = (
+        db.query(User)
+        .filter(User.purchase_token == purchase_token, User.id != user.id)
+        .first()
+    )
+    if linked_to_other:
+        logger.warning("Restore blocked: Purchase token is linked to another existing user account %s", linked_to_other.id)
+        return {"success": False, "message": "This purchase is already linked to another account"}
+
+    expiry_time_millis = response.get("expiryTimeMillis")
+    expiry_datetime = datetime.fromtimestamp(int(expiry_time_millis) / 1000, tz=timezone.utc)
+
+    if response.get("acknowledgementState") == 0:
+        try:
+            service = get_android_publisher()
+            service.purchases().subscriptions().acknowledge(
+                packageName=PACKAGE_NAME,
+                subscriptionId=product_id,
+                token=purchase_token,
+                body={},
+            ).execute()
+        except HttpError:
+            logger.warning("Failed to acknowledge purchase during restore")
+
+    user.subscription = SubscriptionEnum.PRO  # type: ignore
+    user.subscription_product_id = product_id  # type: ignore
+    user.purchase_token = purchase_token  # type: ignore
+    user.subscription_platform = "android"  # type: ignore
+    user.subscription_expiry = expiry_datetime  # type: ignore
+    user.auto_renewing = response.get("autoRenewing", False)
+
+    db.commit()
+    db.refresh(user)
+
+    logger.info("Subscription restored successfully for user %s", user.id)
+
+    return {"success": True, "message": "Subscription restored successfully", "expiry": expiry_datetime}
