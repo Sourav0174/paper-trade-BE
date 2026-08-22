@@ -131,7 +131,7 @@ def get_scheduler() -> AsyncIOScheduler:
         _scheduler.add_job(
             execute_pending_orders_job,
             "interval",
-            seconds=SCHEDULER_INTERVAL_SECONDS,
+            minutes=10,
             id=EXECUTE_JOB_ID,
             replace_existing=True,
             max_instances=1,
