@@ -35,6 +35,8 @@ from app.mentor.schema import (
     MentorResponse,
     MentorSummary,
     PublicMentorSummary,
+    Severity,
+    SingleTradeContext,
     TradeInput,
     TradingGrade,
 )
@@ -108,6 +110,29 @@ RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
   "key_takeaway": "Single most important lesson in one concise sentence.",
   "risk_warning": "Important risk expressed naturally, or null if no major risk exists.",
   "next_focus": "One specific focus area for upcoming trades."
+}"""
+
+    TRADE_SYSTEM_PROMPT = """You are an elite trading psychologist and quantitative execution coach for Paper Trade.
+Your task is to analyze a single executed trade and provide structured, insightful coaching on this specific trade.
+
+CRITICAL EXECUTION GUIDELINES:
+1. FOCUS ON THIS SPECIFIC TRADE: The subject of your analysis is the provided trade (symbol, price, quantity, trade type, outcome).
+2. ACCURATE FINANCIAL FACTS: Strictly reference the provided numbers (execution price, realized/unrealized P&L, holding duration, position allocation). Never invent prices or P&L.
+3. EXECUTION EVALUATION:
+   - Evaluate whether position sizing was disciplined (allocation > 20% is elevated, > 50% is high risk).
+   - If this trade was entered shortly after a loss (is_after_recent_loss is true), address emotional impulse risk constructively.
+   - If the trade was profitable, reinforce what went right (risk/reward, patience) and warn against overconfidence.
+   - If the trade was a loss, coach on loss acceptance, stop-loss discipline, and preventing revenge trades.
+   - If the trade is still open, coach on active trade management and planning the exit.
+4. TONE: Direct, encouraging, professional, and grounded in disciplined trading psychology.
+
+RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
+{
+  "headline": "Short natural headline about this specific trade (max 8 words)",
+  "mentor_message": "2-3 paragraphs analyzing this specific trade execution, risk factors, and psychological discipline",
+  "key_takeaway": "Single most important lesson from this trade execution (1 sentence)",
+  "risk_warning": "Specific risk warning for this trade or null if risk was well-managed",
+  "next_focus": "Primary focus area (e.g., 'Position Sizing', 'Loss Acceptance', 'Execution Discipline', 'Profit Protection')"
 }"""
 
     def __init__(
@@ -192,11 +217,22 @@ RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
                 logger.warning("Cached review schema invalidation (rebuilding AI review): %s", e)
 
         summary = self.generate_summary(db, user_id)
-        coaching_response = await self._generate_coaching_response(summary)
+        coaching_source = "ai"
+        try:
+            coaching_response = await self._generate_coaching_response(summary)
+        except Exception as e:
+            logger.warning(
+                "AI generation failed (%s: %s). Activating deterministic coaching fallback.",
+                type(e).__name__,
+                e,
+            )
+            logger.warning("AI_MENTOR_STAGE=deterministic_fallback")
+            coaching_response = self._synthesize_fallback_coaching(summary)
+            coaching_source = "deterministic_fallback"
 
         now_utc = datetime.now(timezone.utc)
         response_dict = coaching_response.model_dump()
-        response_dict["_coaching_source"] = "ai"
+        response_dict["_coaching_source"] = coaching_source
 
         if cached_review:
             cached_review.health_score = summary.trading_health_score # type: ignore
@@ -283,14 +319,284 @@ RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
         self, db: Session, user_id: int, trade_id: Union[int, str]
     ) -> MentorResponse:
         """
-        Generates a focused mentor review for a specific trade execution.
+        Generates a focused, trade-specific mentor review for an individual trade execution.
         """
-        target_trade = db.query(Trade).filter(Trade.id == trade_id, Trade.user_id == user_id).first()
+        self._verify_user_exists(db, user_id)
+
+        trade_id_int = int(trade_id) if str(trade_id).isdigit() else -1
+        target_trade = db.query(Trade).filter(Trade.id == trade_id_int, Trade.user_id == user_id).first()
         if not target_trade:
             raise ValueError(f"Trade with ID {trade_id} not found for user {user_id}")
 
-        summary = self.generate_summary(db, user_id)
-        return await self._generate_coaching_response(summary)
+        context = self._build_single_trade_context(db, user_id, target_trade)
+
+        try:
+            return await self._generate_trade_coaching_response(context)
+        except Exception as e:
+            logger.warning(
+                "Trade AI generation failed (%s: %s). Activating deterministic trade fallback.",
+                type(e).__name__,
+                e,
+            )
+            return self._synthesize_single_trade_fallback(context)
+
+    def _build_single_trade_context(
+        self, db: Session, user_id: int, target_trade: Trade
+    ) -> SingleTradeContext:
+        """Constructs deterministic, factual single-trade context from ORM trade and FIFO reconstruction."""
+        raw_trades = db.query(Trade).filter(Trade.user_id == user_id).order_by(Trade.created_at.asc()).all()
+        normalized_trades = self._convert_orm_trades(raw_trades)
+
+        holdings_items, portfolio_value = self._load_holdings_state(db, user_id)
+        fifo_result = self.fifo_reconstructor.process_trades(normalized_trades)
+
+        trade_type = (
+            target_trade.trade_type.value
+            if hasattr(target_trade.trade_type, "value")
+            else str(target_trade.trade_type).upper()
+        )
+        trade_price = float(target_trade.price)
+        trade_qty = int(target_trade.quantity)
+        trade_value = round(trade_qty * trade_price, 2)
+        allocation_pct = round((trade_value / portfolio_value) * 100, 2) if portfolio_value > 0 else 0.0
+
+        # Check for recent loss prior to this trade (Revenge trading signal: loss closed <= 15 mins before entry)
+        is_after_recent_loss = False
+        target_time = target_trade.created_at
+        for c in fifo_result.closed_chunks:
+            if (
+                c.pnl < 0
+                and str(c.sell_trade_id) != str(target_trade.id)
+                and str(c.buy_trade_id) != str(target_trade.id)
+                and c.sell_timestamp <= target_time
+            ):
+                time_diff_min = (target_time - c.sell_timestamp).total_seconds() / 60.0
+                if 0.0 <= time_diff_min <= 15.0:
+                    is_after_recent_loss = True
+                    break
+
+        # Check matched chunks for this trade
+        realized_pnl: Optional[float] = None
+        realized_pnl_pct: Optional[float] = None
+        avg_entry: Optional[float] = None
+        avg_exit: Optional[float] = None
+        duration_min: Optional[float] = None
+        is_closed = False
+
+        if trade_type == "SELL":
+            matching_chunks = [c for c in fifo_result.closed_chunks if str(c.sell_trade_id) == str(target_trade.id)]
+            if matching_chunks:
+                is_closed = True
+                matched_qty = sum(c.quantity for c in matching_chunks)
+                total_pnl = sum(c.pnl for c in matching_chunks)
+                total_cost = sum(c.buy_price * c.quantity for c in matching_chunks)
+                realized_pnl = round(total_pnl, 2)
+                realized_pnl_pct = round((total_pnl / total_cost) * 100, 2) if total_cost > 0 else 0.0
+                avg_entry = round(total_cost / matched_qty, 2) if matched_qty > 0 else trade_price
+                avg_exit = trade_price
+                duration_min = round(
+                    sum(c.duration_minutes * c.quantity for c in matching_chunks) / matched_qty, 1
+                ) if matched_qty > 0 else 0.0
+        else:  # BUY
+            matching_chunks = [c for c in fifo_result.closed_chunks if str(c.buy_trade_id) == str(target_trade.id)]
+            if matching_chunks:
+                is_closed = True
+                closed_qty = sum(c.quantity for c in matching_chunks)
+                total_pnl = sum(c.pnl for c in matching_chunks)
+                total_proceeds = sum(c.sell_price * c.quantity for c in matching_chunks)
+                total_cost = trade_price * closed_qty
+                realized_pnl = round(total_pnl, 2)
+                realized_pnl_pct = round((total_pnl / total_cost) * 100, 2) if total_cost > 0 else 0.0
+                avg_entry = trade_price
+                avg_exit = round(total_proceeds / closed_qty, 2) if closed_qty > 0 else None
+                duration_min = round(
+                    sum(c.duration_minutes * c.quantity for c in matching_chunks) / closed_qty, 1
+                ) if closed_qty > 0 else 0.0
+            else:
+                avg_entry = trade_price
+
+        # Portfolio overall metrics for grounding
+        total_closed = len(fifo_result.closed_positions)
+        win_positions = sum(1 for p in fifo_result.closed_positions if p.is_win)
+        win_rate = round((win_positions / total_closed) * 100, 1) if total_closed > 0 else 0.0
+
+        return SingleTradeContext(
+            symbol=target_trade.symbol,
+            trade_type=trade_type,
+            quantity=trade_qty,
+            execution_price=trade_price,
+            trade_value=trade_value,
+            position_allocation_pct=allocation_pct,
+            is_closed=is_closed,
+            realized_pnl=realized_pnl,
+            realized_pnl_pct=realized_pnl_pct,
+            avg_entry_price=avg_entry,
+            avg_exit_price=avg_exit,
+            holding_duration_minutes=duration_min,
+            is_after_recent_loss=is_after_recent_loss,
+            portfolio_total_trades=len(normalized_trades),
+            portfolio_win_rate_pct=win_rate,
+        )
+
+    async def _generate_trade_coaching_response(
+        self, context: SingleTradeContext
+    ) -> MentorResponse:
+        """Invokes LLM with validated trade-specific context and TRADE_SYSTEM_PROMPT."""
+        context_json = json.dumps(context.model_dump(), indent=2, default=str)
+        self._validate_llm_context(context_json)
+
+        user_prompt = (
+            f"Analyze this executed trade and return the structured JSON coaching response:\n\n"
+            f"{context_json}"
+        )
+
+        model_name = getattr(getattr(self.ai_client, "provider", None), "model_name", "unknown")
+        logger.warning("AI_TRADE_REVIEW_LLM_REQUEST_BEGIN")
+        logger.warning("AI_TRADE_REVIEW_LLM_CONTEXT=%s", user_prompt)
+        logger.warning("AI_TRADE_REVIEW_LLM_REQUEST_END")
+
+        raw_json_str = await self.ai_client.generate_async(
+            system_prompt=self.TRADE_SYSTEM_PROMPT,
+            user_prompt=user_prompt,
+            response_mime_type="application/json",
+        )
+        logger.warning(
+            "AI_TRADE_REVIEW_RAW_LLM_RESPONSE | model=%s | raw=%s",
+            model_name,
+            raw_json_str,
+        )
+
+        return MentorResponse.model_validate_json(raw_json_str)
+
+    @staticmethod
+    def _synthesize_single_trade_fallback(context: SingleTradeContext) -> MentorResponse:
+        """Produces high-value, deterministic coaching for a single executed trade when LLM fails or times out."""
+        symbol = context.symbol
+        trade_type = context.trade_type
+        price = context.execution_price
+        qty = context.quantity
+        val = context.trade_value
+        alloc = context.position_allocation_pct
+        pnl = context.realized_pnl
+        pnl_pct = context.realized_pnl_pct
+        is_closed = context.is_closed
+        is_revenge = context.is_after_recent_loss
+        win_rate = context.portfolio_win_rate_pct
+
+        # 1. Headline
+        if trade_type == "SELL" and pnl is not None:
+            if pnl > 0:
+                headline = f"Disciplined Win on {symbol} (+${pnl:,.2f})"
+            elif pnl < 0:
+                headline = f"Controlled Loss on {symbol} (-${abs(pnl):,.2f})"
+            else:
+                headline = f"Breakeven Exit on {symbol}"
+        elif is_revenge:
+            headline = f"Caution on {symbol} — Rapid Re-Entry"
+        elif alloc > 50.0:
+            headline = f"High Position Sizing on {symbol} ({alloc:.1f}%)"
+        else:
+            headline = f"{trade_type.capitalize()} Execution on {symbol} @ ${price:,.2f}"
+
+        # 2. Mentor Message
+        paragraphs: List[str] = []
+
+        # Para 1: Execution & Outcome facts
+        p1 = (
+            f"You executed a {trade_type} of {qty} shares of {symbol} at ${price:,.2f} "
+            f"for a total capital commitment of ${val:,.2f} ({alloc:.1f}% of portfolio)."
+        )
+        if is_closed and pnl is not None:
+            pnl_sign = "+" if pnl >= 0 else "-"
+            entry_txt = f" from average entry of ${context.avg_entry_price:,.2f}" if context.avg_entry_price else ""
+            dur_txt = (
+                f" over a holding duration of {context.holding_duration_minutes:.1f} minutes"
+                if context.holding_duration_minutes
+                else ""
+            )
+            p1 += f" This trade realized {pnl_sign}${abs(pnl):,.2f} ({pnl_pct:+.1f}%){entry_txt}{dur_txt}."
+        elif not is_closed and trade_type == "BUY":
+            p1 += " This position is currently active in your portfolio."
+        paragraphs.append(p1)
+
+        # Para 2: Behavioral & Risk Diagnostic
+        if is_revenge:
+            paragraphs.append(
+                "This execution occurred within 15 minutes of closing a losing position. "
+                "Rapid re-entry following a loss is a common marker for emotional revenge trading. "
+                "Ensure your trade setup was validated by your technical rules rather than an impulse to recover lost capital."
+            )
+        elif alloc > 50.0:
+            paragraphs.append(
+                f"Allocating {alloc:.1f}% of total portfolio capital to a single position introduces severe concentration risk. "
+                "Even high-probability setups can experience adverse market moves, and outsized positions magnify portfolio drawdowns."
+            )
+        elif is_closed and pnl is not None and pnl > 0:
+            paragraphs.append(
+                "This execution captured a solid gain with disciplined risk management. "
+                "Taking profits according to your trading plan is critical for maintaining consistency. "
+                "Avoid rolling profits immediately into higher-risk trades."
+            )
+        elif is_closed and pnl is not None and pnl < 0:
+            paragraphs.append(
+                "Taking a loss is a natural and unavoidable component of trading. "
+                "The key to long-term success is keeping losses small and adhering strictly to stop-loss levels. "
+                "Accept the result cleanly and wait patiently for your next valid setup."
+            )
+        else:
+            paragraphs.append(
+                "The execution sizing was managed within measured risk bounds. "
+                "Continue executing with patience, maintaining predefined stops and targets on every position."
+            )
+
+        # Para 3: Actionable guidance
+        if is_revenge:
+            paragraphs.append("Recommended action: Take a mandatory 15-30 minute pause away from the charts following any closed loss.")
+        elif alloc > 50.0:
+            paragraphs.append("Recommended action: Cap individual position sizing to at most 10-20% of your total trading capital.")
+        else:
+            paragraphs.append(f"Across your portfolio, your overall win rate is {win_rate:.1f}%. Keep prioritizing process over individual trade outcomes.")
+
+        mentor_message = "\n\n".join(paragraphs)
+
+        # 3. Key Takeaway
+        if is_revenge:
+            key_takeaway = "Step away after a loss to ensure next entries follow your system, not emotions."
+        elif alloc > 50.0:
+            key_takeaway = "Cap position size to prevent a single trade from creating an outsized portfolio drawdown."
+        elif is_closed and pnl is not None and pnl > 0:
+            key_takeaway = "Lock in profits according to your plan and avoid overconfidence after winning trades."
+        elif is_closed and pnl is not None and pnl < 0:
+            key_takeaway = "Accept small losses cleanly; they protect your capital for the next opportunity."
+        else:
+            key_takeaway = "Execute strictly within your predefined trading rules and position sizing boundaries."
+
+        # 4. Risk Warning
+        risk_warning: Optional[str] = None
+        if is_revenge:
+            risk_warning = "Possible Revenge Trading: Executed within 15 minutes of closing a loss."
+        elif alloc > 50.0:
+            risk_warning = f"High Sizing Exposure: Single position represents {alloc:.1f}% of total portfolio."
+
+        # 5. Next Focus
+        if is_revenge:
+            next_focus = "Emotional Discipline"
+        elif is_closed and pnl is not None and pnl < 0:
+            next_focus = "Loss Acceptance"
+        elif alloc > 50.0:
+            next_focus = "Position Sizing"
+        elif is_closed and pnl is not None and pnl > 0:
+            next_focus = "Profit Protection"
+        else:
+            next_focus = "Execution Discipline"
+
+        return MentorResponse(
+            headline=headline,
+            mentor_message=mentor_message,
+            key_takeaway=key_takeaway,
+            risk_warning=risk_warning,
+            next_focus=next_focus,
+        )
 
     @staticmethod
     def _validate_llm_context(context_json: str) -> None:
@@ -404,6 +710,129 @@ RESPOND ONLY WITH A VALID JSON OBJECT MATCHING THIS EXACT SCHEMA:
             total_trades_count=int(summary.portfolio_summary.get("total_trades_count", 0)),
             closed_positions_count=int(summary.portfolio_summary.get("closed_positions_count", 0)),
             portfolio_concentration_hhi=float(summary.portfolio_summary.get("portfolio_concentration_hhi", 0.0)),
+        )
+
+    @staticmethod
+    def _synthesize_fallback_coaching(summary: MentorSummary) -> MentorResponse:
+        """
+        Synthesizes high-value deterministic coaching from RuleEngine insights and portfolio analytics
+        when external LLM providers fail, time out, or are rate limited.
+        """
+        health_score = summary.trading_health_score
+        portfolio = summary.portfolio_summary
+        total_trades = int(portfolio.get("total_trades_count", 0))
+        win_rate = float(portfolio.get("win_rate_pct", 0.0))
+        realized_pnl = float(portfolio.get("total_realized_pnl", 0.0))
+
+        top_strengths = summary.top_strengths
+        top_mistakes = summary.top_mistakes
+        top_risks = summary.top_risks
+        action_items = summary.action_items
+        focus = summary.improvement_focus or "Execution Discipline"
+
+        # 1. Headline
+        if total_trades == 0:
+            headline = "Clean Slate — Ready for Your First Trade"
+        elif top_mistakes:
+            headline = f"Focus on {focus} — {top_mistakes[0].title}"
+        elif top_risks:
+            headline = f"Risk Alert — Manage {top_risks[0].title}"
+        elif health_score >= 80.0:
+            headline = "Strong Trading Discipline — Protect Your Edge"
+        elif health_score >= 60.0:
+            headline = "Solid Foundation — Refining Risk & Consistency"
+        else:
+            headline = f"Priority Focus: {focus} & Capital Preservation"
+
+        # 2. Mentor Message (structured multi-paragraph guidance)
+        paragraphs: List[str] = []
+
+        if total_trades == 0:
+            paragraphs.append(
+                "You have a clean slate with zero closed trades. Before entering the market, "
+                "establish a structured trading plan with predefined position limits and exit rules."
+            )
+            paragraphs.append(
+                "When your first setup triggers, focus purely on execution discipline rather than "
+                "the financial outcome of the individual trade."
+            )
+        else:
+            # Performance Context Paragraph
+            pnl_str = f"+${realized_pnl:,.2f}" if realized_pnl >= 0 else f"-${abs(realized_pnl):,.2f}"
+            perf_intro = (
+                f"Your trading health score stands at {health_score:.1f}/100 with a win rate of "
+                f"{win_rate:.1f}% and net realized P&L of {pnl_str} across {total_trades} trade(s)."
+            )
+            if top_strengths:
+                s = top_strengths[0]
+                perf_intro += f" A key strength in your data is {s.title.lower()} ({s.description})."
+            paragraphs.append(perf_intro)
+
+            # Core Diagnostic Paragraph
+            if top_mistakes:
+                m = top_mistakes[0]
+                mistake_msg = f"The primary area requiring attention is {m.title.lower()}: {m.description}"
+                if len(top_mistakes) > 1:
+                    m2 = top_mistakes[1]
+                    mistake_msg += f" Watch out also for {m2.title.lower()} ({m2.description})."
+                paragraphs.append(mistake_msg)
+            elif top_risks:
+                r = top_risks[0]
+                paragraphs.append(
+                    f"While no severe behavioral mistakes were flagged, portfolio risk requires monitoring: "
+                    f"{r.title} ({r.description})."
+                )
+            else:
+                paragraphs.append(
+                    "Your execution remains well within healthy risk parameters. Continue maintaining "
+                    "consistent sizing and adhering strictly to your entry and exit criteria."
+                )
+
+            # Action / Forward Guidance Paragraph
+            if action_items:
+                action_text = " ".join(f"{i+1}. {item}" for i, item in enumerate(action_items[:2]))
+                paragraphs.append(f"Immediate recommendations to improve your consistency: {action_text}")
+            else:
+                paragraphs.append(
+                    f"Keep your primary focus on {focus.lower()} and protect your capital against outsized drawdowns."
+                )
+
+        mentor_message = "\n\n".join(paragraphs)
+
+        # 3. Key Takeaway
+        if action_items:
+            key_takeaway = action_items[0]
+        elif top_mistakes and top_mistakes[0].action_item:
+            key_takeaway = top_mistakes[0].action_item
+        elif top_mistakes:
+            key_takeaway = top_mistakes[0].description
+        elif top_risks and top_risks[0].action_item:
+            key_takeaway = top_risks[0].action_item
+        elif total_trades == 0:
+            key_takeaway = "Take your first trade only when a valid strategy setup appears."
+        else:
+            key_takeaway = "Maintain strict risk discipline and adhere to your position sizing limits."
+
+        # 4. Risk Warning
+        risk_warning: Optional[str] = None
+        if top_risks:
+            r = top_risks[0]
+            risk_warning = f"{r.title}: {r.description}"
+        elif top_mistakes:
+            critical_mistakes = [m for m in top_mistakes if m.severity in (Severity.CRITICAL, Severity.HIGH)]
+            if critical_mistakes:
+                cm = critical_mistakes[0]
+                risk_warning = f"{cm.title}: {cm.description}"
+
+        # 5. Next Focus
+        next_focus = focus
+
+        return MentorResponse(
+            headline=headline,
+            mentor_message=mentor_message,
+            key_takeaway=key_takeaway,
+            risk_warning=risk_warning,
+            next_focus=next_focus,
         )
 
     @staticmethod

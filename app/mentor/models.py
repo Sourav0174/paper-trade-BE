@@ -36,7 +36,7 @@ class MentorReview(Base):
     response_json = Column(JSON, nullable=False)
 
     trade_count = Column(Integer, nullable=False, default=0)
-    last_trade_id = Column(String, nullable=True)
+    last_trade_id = Column(String, nullable=True, index=True)
 
     stale = Column(Boolean, nullable=False, default=False, index=True)
     generated_at = Column(

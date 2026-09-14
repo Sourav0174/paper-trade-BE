@@ -17,7 +17,12 @@ import logging
 import unittest
 from unittest.mock import AsyncMock, MagicMock
 
-from app.ai.exceptions import AIServiceUnavailableError
+from app.ai.exceptions import (
+    AIConfigurationError,
+    AIRateLimitError,
+    AIResponseParsingError,
+    AIServiceUnavailableError,
+)
 from app.mentor.models import MentorReview
 from app.mentor.schema import (
     AnalyticsMetrics,
@@ -33,7 +38,7 @@ from app.mentor.schema import (
     TradingGrade,
 )
 from app.mentor.service import MentorService
-from app.trades.models import Trade
+from app.trades.models import Holding, Portfolio, Trade
 from app.users.models import User
 
 
@@ -90,8 +95,8 @@ class TestMentorService(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(review.summary.portfolio_summary["total_trades_count"], 0)
         self.assertEqual(review.coaching_response.headline, "Welcome to PaperTrade")
 
-    async def test_ai_failure_raises_exception_without_fallback(self):
-        """Test AI provider failure raises AIServiceUnavailableError without generating fallback coaching."""
+    async def test_ai_timeout_triggers_deterministic_fallback(self):
+        """Test AI timeout triggers deterministic fallback producing valid review and response."""
         self.db.query().filter().first.return_value = self.mock_user
         self.db.query().filter().count.return_value = 0
         self.db.query().filter().all.return_value = []
@@ -101,12 +106,186 @@ class TestMentorService(unittest.IsolatedAsyncioTestCase):
         mock_ai_client.generate_async = AsyncMock(side_effect=AIServiceUnavailableError("OpenRouter Timeout"))
 
         service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
 
-        with self.assertRaises(AIServiceUnavailableError):
-            await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertEqual(review.user_id, 1)
+        self.assertIsInstance(review.coaching_response, MentorResponse)
+        self.assertEqual(review.coaching_response.headline, "Clean Slate — Ready for Your First Trade")
+        self.assertTrue(len(review.coaching_response.mentor_message) > 0)
+        self.assertTrue(len(review.coaching_response.key_takeaway) > 0)
+        self.db.add.assert_called_once()
+        self.db.commit.assert_called_once()
 
-        self.db.add.assert_not_called()
-        self.db.commit.assert_not_called()
+    async def test_ai_rate_limit_triggers_deterministic_fallback(self):
+        """Test AI 429 rate limit triggers deterministic fallback without raising 503."""
+        self.db.query().filter().first.return_value = self.mock_user
+        self.db.query().filter().count.return_value = 0
+        self.db.query().filter().all.return_value = []
+        self.db.query().filter().order_by().first.return_value = None
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIRateLimitError("Rate limit exceeded"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
+
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertIsInstance(review.coaching_response, MentorResponse)
+
+    async def test_ai_parsing_error_triggers_deterministic_fallback(self):
+        """Test malformed AI response triggers deterministic fallback."""
+        self.db.query().filter().first.return_value = self.mock_user
+        self.db.query().filter().count.return_value = 0
+        self.db.query().filter().all.return_value = []
+        self.db.query().filter().order_by().first.return_value = None
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIResponseParsingError("Invalid JSON from LLM"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
+
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertIsInstance(review.coaching_response, MentorResponse)
+
+    async def test_ai_config_error_triggers_deterministic_fallback(self):
+        """Test missing API key / AIConfigurationError triggers deterministic fallback."""
+        self.db.query().filter().first.return_value = self.mock_user
+        self.db.query().filter().count.return_value = 0
+        self.db.query().filter().all.return_value = []
+        self.db.query().filter().order_by().first.return_value = None
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIConfigurationError("Missing API key"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
+
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertIsInstance(review.coaching_response, MentorResponse)
+
+    async def test_ai_unexpected_exception_triggers_deterministic_fallback(self):
+        """Test unexpected network drop or exception triggers deterministic fallback."""
+        self.db.query().filter().first.return_value = self.mock_user
+        self.db.query().filter().count.return_value = 0
+        self.db.query().filter().all.return_value = []
+        self.db.query().filter().order_by().first.return_value = None
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=RuntimeError("Unexpected connection drop"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        review = await service.generate_daily_review(self.db, user_id=1, force_regenerate=True)
+
+        self.assertIsInstance(review, DailyMentorReview)
+        self.assertIsInstance(review.coaching_response, MentorResponse)
+
+    def test_fallback_coaching_synthesis_with_active_mistakes_and_risks(self):
+        """Test _synthesize_fallback_coaching synthesizes grounded coaching from rule insights."""
+        summary = MentorSummary(
+            trading_health_score=42.5,
+            grade=TradingGrade.NEEDS_WORK,
+            portfolio_summary={
+                "trading_health_score": 42.5,
+                "win_rate_pct": 35.0,
+                "profit_factor": 0.85,
+                "risk_reward_ratio": 1.2,
+                "max_drawdown_pct": 8.5,
+                "holding_duration_ratio": 1.5,
+                "max_position_sizing_pct": 55.0,
+                "portfolio_concentration_hhi": 3200.0,
+                "total_realized_pnl": -1250.0,
+                "total_trades_count": 20,
+                "closed_positions_count": 12,
+            },
+            top_strengths=[],
+            top_mistakes=[
+                Insight(
+                    rule_id="MISTAKE_REVENGE_TRADING",
+                    category=InsightCategory.MISTAKE,
+                    title="Revenge Trading Detected",
+                    description="Re-entered 3 trades within 15 minutes of losses.",
+                    severity=Severity.CRITICAL,
+                    confidence=Confidence.HIGH,
+                    action_item="Pause trading for 30 minutes following any closed loss.",
+                ),
+            ],
+            top_risks=[
+                Insight(
+                    rule_id="RISK_CONCENTRATION_HHI",
+                    category=InsightCategory.RISK_WARNING,
+                    title="Concentration Risk",
+                    description="HHI concentration is 3200.0 exceeding 2500 threshold.",
+                    severity=Severity.HIGH,
+                    confidence=Confidence.HIGH,
+                    action_item="Diversify capital across multiple non-correlated assets.",
+                ),
+            ],
+            action_items=[
+                "Pause trading for 30 minutes following any closed loss.",
+                "Cap single position sizing at 10% of portfolio.",
+            ],
+            improvement_focus="Emotional Trading",
+            all_insights=[],
+        )
+
+        coaching = MentorService._synthesize_fallback_coaching(summary)
+
+        self.assertIsInstance(coaching, MentorResponse)
+        self.assertIn("Emotional Trading", coaching.headline)
+        self.assertIn("Revenge Trading Detected", coaching.headline)
+        self.assertIn("42.5/100", coaching.mentor_message)
+        self.assertIn("35.0%", coaching.mentor_message)
+        self.assertIn("revenge trading detected", coaching.mentor_message.lower())
+        self.assertIn("Pause trading for 30 minutes following any closed loss.", coaching.key_takeaway)
+        self.assertIsNotNone(coaching.risk_warning)
+        self.assertIn("Concentration Risk", coaching.risk_warning)
+        self.assertEqual(coaching.next_focus, "Emotional Trading")
+
+    def test_fallback_coaching_synthesis_disciplined_trader(self):
+        """Test _synthesize_fallback_coaching reinforces strengths for disciplined high-scoring trader."""
+        summary = MentorSummary(
+            trading_health_score=88.0,
+            grade=TradingGrade.DISCIPLINED,
+            portfolio_summary={
+                "trading_health_score": 88.0,
+                "win_rate_pct": 65.0,
+                "profit_factor": 2.4,
+                "risk_reward_ratio": 2.1,
+                "max_drawdown_pct": 2.0,
+                "holding_duration_ratio": 0.6,
+                "max_position_sizing_pct": 12.0,
+                "portfolio_concentration_hhi": 1100.0,
+                "total_realized_pnl": 4500.0,
+                "total_trades_count": 30,
+                "closed_positions_count": 22,
+            },
+            top_strengths=[
+                Insight(
+                    rule_id="STRENGTH_WIN_RATE",
+                    category=InsightCategory.STRENGTH,
+                    title="Solid Win Rate",
+                    description="Win rate is 65.0% across 22 closed positions.",
+                    severity=Severity.LOW,
+                    confidence=Confidence.HIGH,
+                ),
+            ],
+            top_mistakes=[],
+            top_risks=[],
+            action_items=[],
+            improvement_focus="Discipline",
+            all_insights=[],
+        )
+
+        coaching = MentorService._synthesize_fallback_coaching(summary)
+
+        self.assertIsInstance(coaching, MentorResponse)
+        self.assertIn("Strong Trading Discipline", coaching.headline)
+        self.assertIn("solid win rate", coaching.mentor_message.lower())
+        self.assertIn("4,500.00", coaching.mentor_message)
+        self.assertIsNone(coaching.risk_warning)
+        self.assertEqual(coaching.next_focus, "Discipline")
 
     def test_1_unsupported_behavioral_inference(self):
         """Test 1: Verifies SYSTEM_PROMPT explicitly prohibits unsupported claims (winners run, cut losses, exit prematurely, emotional, etc.)."""
@@ -378,6 +557,269 @@ class TestMentorService(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(review, DailyMentorReview)
         self.assertEqual(review.coaching_response.headline, "Self Healed Review")
         self.assertEqual(review.coaching_response.next_focus, "Execution")
+
+    async def test_trade_review_valid_trade_success(self):
+        """Test GET /mentor/trade-review/{trade_id} with valid trade invokes LLM with trade context."""
+        now = datetime.now(timezone.utc)
+        target_trade = Trade(
+            id=101,
+            user_id=1,
+            symbol="TCS",
+            quantity=10,
+            price=3500.0,
+            trade_type="SELL",
+            created_at=now,
+        )
+        prior_buy = Trade(
+            id=100,
+            user_id=1,
+            symbol="TCS",
+            quantity=10,
+            price=3300.0,
+            trade_type="BUY",
+            created_at=now,
+        )
+
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = target_trade
+        mock_trade_query.filter().order_by().all.return_value = [prior_buy, target_trade]
+        mock_portfolio_query = MagicMock()
+        mock_portfolio_query.filter().first.return_value = self.mock_portfolio
+        mock_holdings_query = MagicMock()
+        mock_holdings_query.filter().all.return_value = []
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            elif model == Portfolio:
+                return mock_portfolio_query
+            elif model == Holding:
+                return mock_holdings_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "headline": "Great Profit Taking on TCS",
+                    "mentor_message": "You closed your TCS position with a disciplined $2,000 profit.",
+                    "key_takeaway": "Following your target price captured the full swing.",
+                    "risk_warning": None,
+                    "next_focus": "Profit Protection",
+                }
+            )
+        )
+
+        service = MentorService(ai_client=mock_ai_client)
+        response = await service.generate_trade_review(self.db, user_id=1, trade_id=101)
+
+        self.assertIsInstance(response, MentorResponse)
+        self.assertEqual(response.headline, "Great Profit Taking on TCS")
+        self.assertEqual(response.next_focus, "Profit Protection")
+
+        # Verify trade-specific prompt was passed to LLM
+        call_kwargs = mock_ai_client.generate_async.call_args.kwargs
+        user_prompt = call_kwargs["user_prompt"]
+        self.assertIn("TCS", user_prompt)
+        self.assertIn("3500", user_prompt)
+        self.assertIn("SELL", user_prompt)
+
+    async def test_trade_review_nonexistent_trade_raises_value_error(self):
+        """Test generate_trade_review raises ValueError when trade_id does not exist."""
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = None
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        service = MentorService()
+        with self.assertRaises(ValueError) as ctx:
+            await service.generate_trade_review(self.db, user_id=1, trade_id=999)
+        self.assertIn("Trade with ID 999 not found", str(ctx.exception))
+
+    async def test_trade_review_trade_belonging_to_another_user_raises_value_error(self):
+        """Test generate_trade_review raises ValueError when trade belongs to another user."""
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = None
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        service = MentorService()
+        with self.assertRaises(ValueError) as ctx:
+            await service.generate_trade_review(self.db, user_id=1, trade_id=202)
+        self.assertIn("not found for user 1", str(ctx.exception))
+
+    async def test_trade_review_fallback_on_llm_failure(self):
+        """Test trade review returns deterministic fallback on LLM failure without crashing."""
+        now = datetime.now(timezone.utc)
+        target_trade = Trade(
+            id=105,
+            user_id=1,
+            symbol="INFY",
+            quantity=50,
+            price=1800.0,
+            trade_type="SELL",
+            created_at=now,
+        )
+        prior_buy = Trade(
+            id=104,
+            user_id=1,
+            symbol="INFY",
+            quantity=50,
+            price=1900.0,
+            trade_type="BUY",
+            created_at=now,
+        )
+
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = target_trade
+        mock_trade_query.filter().order_by().all.return_value = [prior_buy, target_trade]
+        mock_portfolio_query = MagicMock()
+        mock_portfolio_query.filter().first.return_value = self.mock_portfolio
+        mock_holdings_query = MagicMock()
+        mock_holdings_query.filter().all.return_value = []
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            elif model == Portfolio:
+                return mock_portfolio_query
+            elif model == Holding:
+                return mock_holdings_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIServiceUnavailableError("OpenRouter 503"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        response = await service.generate_trade_review(self.db, user_id=1, trade_id=105)
+
+        self.assertIsInstance(response, MentorResponse)
+        self.assertIn("Controlled Loss on INFY", response.headline)
+        self.assertIn("INFY", response.mentor_message)
+        self.assertIn("1,800.00", response.mentor_message)
+        self.assertEqual(response.next_focus, "Loss Acceptance")
+
+    async def test_trade_review_single_open_buy_trade(self):
+        """Test trade review handles a newly opened BUY trade with zero closed history gracefully."""
+        now = datetime.now(timezone.utc)
+        target_trade = Trade(
+            id=200,
+            user_id=1,
+            symbol="RELIANCE",
+            quantity=25,
+            price=2800.0,
+            trade_type="BUY",
+            created_at=now,
+        )
+
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = target_trade
+        mock_trade_query.filter().order_by().all.return_value = [target_trade]
+        mock_portfolio_query = MagicMock()
+        mock_portfolio_query.filter().first.return_value = self.mock_portfolio
+        mock_holdings_query = MagicMock()
+        mock_holdings_query.filter().all.return_value = []
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            elif model == Portfolio:
+                return mock_portfolio_query
+            elif model == Holding:
+                return mock_holdings_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIServiceUnavailableError("LLM down"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        response = await service.generate_trade_review(self.db, user_id=1, trade_id=200)
+
+        self.assertIsInstance(response, MentorResponse)
+        self.assertIn("RELIANCE", response.headline)
+        self.assertIn("2,800.00", response.mentor_message)
+        self.assertIn("currently active in your portfolio", response.mentor_message)
+
+    async def test_trade_review_detects_revenge_entry(self):
+        """Test trade review flags rapid re-entry within 15 minutes of a loss as a revenge trade risk."""
+        from datetime import timedelta
+        base_time = datetime.now(timezone.utc)
+        loss_buy = Trade(id=1, user_id=1, symbol="SBIN", quantity=100, price=600.0, trade_type="BUY", created_at=base_time)
+        loss_sell = Trade(id=2, user_id=1, symbol="SBIN", quantity=100, price=550.0, trade_type="SELL", created_at=base_time + timedelta(minutes=10))
+        # Re-entry 5 minutes after loss
+        revenge_buy = Trade(id=3, user_id=1, symbol="SBIN", quantity=150, price=552.0, trade_type="BUY", created_at=base_time + timedelta(minutes=15))
+
+        mock_user_query = MagicMock()
+        mock_user_query.filter().first.return_value = self.mock_user
+        mock_trade_query = MagicMock()
+        mock_trade_query.filter().first.return_value = revenge_buy
+        mock_trade_query.filter().order_by().all.return_value = [loss_buy, loss_sell, revenge_buy]
+        mock_portfolio_query = MagicMock()
+        mock_portfolio_query.filter().first.return_value = self.mock_portfolio
+        mock_holdings_query = MagicMock()
+        mock_holdings_query.filter().all.return_value = []
+
+        def db_query(model):
+            if model == User:
+                return mock_user_query
+            elif model == Trade:
+                return mock_trade_query
+            elif model == Portfolio:
+                return mock_portfolio_query
+            elif model == Holding:
+                return mock_holdings_query
+            return MagicMock()
+
+        self.db.query.side_effect = db_query
+
+        mock_ai_client = MagicMock()
+        mock_ai_client.generate_async = AsyncMock(side_effect=AIServiceUnavailableError("LLM down"))
+
+        service = MentorService(ai_client=mock_ai_client)
+        response = await service.generate_trade_review(self.db, user_id=1, trade_id=3)
+
+        self.assertIsInstance(response, MentorResponse)
+        self.assertIn("Rapid Re-Entry", response.headline)
+        self.assertIn("revenge trading", response.mentor_message.lower())
+        self.assertIsNotNone(response.risk_warning)
+        self.assertIn("Revenge", response.risk_warning)
+        self.assertEqual(response.next_focus, "Emotional Discipline")
 
 
 if __name__ == "__main__":

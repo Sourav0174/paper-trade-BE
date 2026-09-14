@@ -1,8 +1,12 @@
+from contextlib import contextmanager
 import logging
 import os
 from datetime import datetime
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
 from app.stocks.service import fetch_multiple_prices, fetch_single_price, get_market_status
@@ -14,12 +18,51 @@ logger = logging.getLogger(__name__)
 
 EXECUTION_BATCH_SIZE = int(os.getenv("ORDER_EXECUTION_BATCH_SIZE", "50"))
 EXPIRY_BATCH_SIZE = int(os.getenv("ORDER_EXPIRY_BATCH_SIZE", "100"))
-SCHEDULER_INTERVAL_SECONDS = int(os.getenv("ORDER_SCHEDULER_INTERVAL_SECONDS", "15"))
 
 EXECUTE_JOB_ID = "execute_pending_orders"
 EXPIRE_JOB_ID = "expire_stale_orders"
+EXPIRE_SAFETY_JOB_ID = "expire_stale_orders_safety"
+
+# Advisory lock identifiers to prevent duplicate execution across multiple worker processes
+EXECUTE_ORDERS_LOCK_ID = 741001
+EXPIRE_ORDERS_LOCK_ID = 741002
 
 _scheduler: AsyncIOScheduler | None = None
+
+
+@contextmanager
+def postgres_advisory_lock(db: Session, lock_id: int):
+    """Acquires a non-blocking PostgreSQL advisory lock on a dedicated connection.
+
+    - If the database dialect is not PostgreSQL (e.g. SQLite in unit tests), yields True.
+    - If the lock is already held by another worker, yields False without blocking.
+    - Releases the lock and closes the dedicated connection safely on exit.
+    """
+    bind = db.get_bind()
+    if bind is None or bind.dialect.name != "postgresql":
+        yield True
+        return
+
+    lock_conn = bind.connect()
+    acquired = False
+    try:
+        acquired = bool(
+            lock_conn.execute(
+                text("SELECT pg_try_advisory_lock(:lock_id)"),
+                {"lock_id": lock_id},
+            ).scalar()
+        )
+        yield acquired
+    finally:
+        if acquired:
+            try:
+                lock_conn.execute(
+                    text("SELECT pg_advisory_unlock(:lock_id)"),
+                    {"lock_id": lock_id},
+                )
+            except Exception:
+                logger.exception("Failed to release PostgreSQL advisory lock %s", lock_id)
+        lock_conn.close()
 
 
 def _is_fillable(order: Order, live_price: float) -> bool:
@@ -39,81 +82,104 @@ def execute_pending_orders_job() -> None:
     db = SessionLocal()
 
     try:
-        orders = (
-            db.query(Order)
-            .filter(
-                Order.status == OrderStatus.PENDING,
-                Order.order_type == OrderType.LIMIT,
+        with postgres_advisory_lock(db, EXECUTE_ORDERS_LOCK_ID) as acquired:
+            if not acquired:
+                logger.info(
+                    "Advisory lock %s held by another worker; skipping order execution tick.",
+                    EXECUTE_ORDERS_LOCK_ID,
+                )
+                return
+
+            orders = (
+                db.query(Order)
+                .filter(
+                    Order.status == OrderStatus.PENDING,
+                    Order.order_type == OrderType.LIMIT,
+                )
+                .order_by(Order.created_at.asc())
+                .limit(EXECUTION_BATCH_SIZE)
+                .all()
             )
-            .order_by(Order.created_at.asc())
-            .limit(EXECUTION_BATCH_SIZE)
-            .all()
-        )
 
-        if not orders:
-            return
+            if not orders:
+                return
 
-        unique_symbols = list({order.symbol for order in orders})
-        price_map: dict[str, float] = {}
+            unique_symbols = list({order.symbol for order in orders})
+            price_map: dict[str, float] = {}
 
-        try:
-            fetched_prices = fetch_multiple_prices(unique_symbols)
-            for sym, (price, _, _) in fetched_prices.items():
-                if price > 0:
-                    price_map[sym] = price
-        except Exception:
-            logger.exception("Failed batch fetching prices for pending orders")
-
-        for order in orders:
             try:
-                live_price = price_map.get(order.symbol)
-
-                if live_price is None or live_price <= 0:
-                    live_price = fetch_single_price(order.symbol)
-                    if live_price is not None and live_price > 0:
-                        price_map[order.symbol] = live_price
-                    else:
-                        continue
-
-                if _is_fillable(order, live_price):
-                    order_service.execute_pending_order(db, order.id, live_price)
-
+                fetched_prices = fetch_multiple_prices(unique_symbols)
+                for sym, (price, _, _) in fetched_prices.items():
+                    if price > 0:
+                        price_map[sym] = price
             except Exception:
-                db.rollback()
-                logger.exception("Failed to execute pending order %s", order.id)
+                logger.exception("Failed batch fetching prices for pending orders")
+
+            for order in orders:
+                try:
+                    live_price = price_map.get(order.symbol)
+
+                    if live_price is None or live_price <= 0:
+                        live_price = fetch_single_price(order.symbol)
+                        if live_price is not None and live_price > 0:
+                            price_map[order.symbol] = live_price
+                        else:
+                            continue
+
+                    if _is_fillable(order, live_price):
+                        order_service.execute_pending_order(db, order.id, live_price)
+
+                except Exception:
+                    db.rollback()
+                    logger.exception("Failed to execute pending order %s", order.id)
 
     finally:
         db.close()
 
 
 def expire_stale_orders_job() -> None:
-    """One batch per tick, oldest first. expires_at is the sole source of
-    truth for expiry, so this runs independently of market hours."""
+    """Sweeps all expired pending orders in batches. expires_at is the sole source of
+    truth for expiry. Runs at scheduled market close (15:31 IST on trading days)."""
 
     db = SessionLocal()
 
     try:
-        now = datetime.utcnow()
+        with postgres_advisory_lock(db, EXPIRE_ORDERS_LOCK_ID) as acquired:
+            if not acquired:
+                logger.info(
+                    "Advisory lock %s held by another worker; skipping stale order expiry.",
+                    EXPIRE_ORDERS_LOCK_ID,
+                )
+                return
 
-        orders = (
-            db.query(Order)
-            .filter(
-                Order.status == OrderStatus.PENDING,
-                Order.expires_at.isnot(None),
-                Order.expires_at <= now,
-            )
-            .order_by(Order.created_at.asc())
-            .limit(EXPIRY_BATCH_SIZE)
-            .all()
-        )
+            now = datetime.utcnow()
 
-        for order in orders:
-            try:
-                order_service.expire_order(db, order.id)
+            while True:
+                orders = (
+                    db.query(Order)
+                    .filter(
+                        Order.status == OrderStatus.PENDING,
+                        Order.expires_at.isnot(None),
+                        Order.expires_at <= now,
+                    )
+                    .order_by(Order.created_at.asc())
+                    .limit(EXPIRY_BATCH_SIZE)
+                    .all()
+                )
 
-            except Exception:
-                db.rollback()
-                logger.exception("Failed to expire order %s", order.id)
+                if not orders:
+                    break
+
+                for order in orders:
+                    try:
+                        order_service.expire_order(db, order.id)
+
+                    except Exception:
+                        db.rollback()
+                        logger.exception("Failed to expire order %s", order.id)
+
+                if len(orders) < EXPIRY_BATCH_SIZE:
+                    break
 
     finally:
         db.close()
@@ -138,11 +204,31 @@ def get_scheduler() -> AsyncIOScheduler:
             coalesce=True,
         )
 
+        # Primary expiry sweep: 15:31 IST, Monday through Friday (right after 15:30 market close)
         _scheduler.add_job(
             expire_stale_orders_job,
-            "interval",
-            seconds=SCHEDULER_INTERVAL_SECONDS,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=15,
+                minute=31,
+                timezone="Asia/Kolkata",
+            ),
             id=EXPIRE_JOB_ID,
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+
+        # Safety fallback sweep: 16:00 IST, Monday through Friday (in case 15:31 sweep was missed)
+        _scheduler.add_job(
+            expire_stale_orders_job,
+            CronTrigger(
+                day_of_week="mon-fri",
+                hour=16,
+                minute=0,
+                timezone="Asia/Kolkata",
+            ),
+            id=EXPIRE_SAFETY_JOB_ID,
             replace_existing=True,
             max_instances=1,
             coalesce=True,
@@ -157,8 +243,7 @@ def start_scheduler() -> None:
     if not scheduler.running:
         scheduler.start()
         logger.info(
-            "Order scheduler started (interval=%ss, execution_batch=%s, expiry_batch=%s)",
-            SCHEDULER_INTERVAL_SECONDS,
+            "Order scheduler started (execution_batch=%s, expiry_batch=%s, expiry_schedule='15:31 and 16:00 IST mon-fri')",
             EXECUTION_BATCH_SIZE,
             EXPIRY_BATCH_SIZE,
         )

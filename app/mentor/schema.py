@@ -227,6 +227,26 @@ class MentorContext(BaseModel):
     portfolio_concentration_hhi: float = Field(description="Portfolio Herfindahl-Hirschman concentration index")
 
 
+class SingleTradeContext(BaseModel):
+    """Factual, objective context for a single executed trade used for mentor debrief."""
+
+    symbol: str = Field(description="Stock ticker symbol")
+    trade_type: str = Field(description="Trade execution type (BUY or SELL)")
+    quantity: int = Field(description="Executed quantity of shares")
+    execution_price: float = Field(description="Execution price per share")
+    trade_value: float = Field(description="Total execution capital value")
+    position_allocation_pct: float = Field(description="Allocation relative to total portfolio capital")
+    is_closed: bool = Field(description="True if position is partially or fully closed")
+    realized_pnl: Optional[float] = Field(default=None, description="Realized net P&L amount if closed")
+    realized_pnl_pct: Optional[float] = Field(default=None, description="Realized P&L percentage if closed")
+    avg_entry_price: Optional[float] = Field(default=None, description="Cost basis entry price")
+    avg_exit_price: Optional[float] = Field(default=None, description="Exit price per share")
+    holding_duration_minutes: Optional[float] = Field(default=None, description="Holding duration in minutes")
+    is_after_recent_loss: bool = Field(default=False, description="True if entered within 15 mins of a loss")
+    portfolio_total_trades: int = Field(default=0, description="Total lifetime execution trades count")
+    portfolio_win_rate_pct: float = Field(default=0.0, description="Historical portfolio win rate percentage")
+
+
 class PromptContext(BaseModel):
     """Decoupled prompt container holding system and user prompt strings."""
 

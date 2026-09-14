@@ -1,10 +1,11 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, Index, Integer, String
+from sqlalchemy import DateTime, Enum, Float, Index, Integer, String, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
 from app.trades.enums import OrderStatus, OrderType, TradeType
+
 
 
 class Trade(Base):
@@ -144,6 +145,17 @@ class Order(Base):
     __table_args__ = (
         Index("ix_orders_user_id_status", "user_id", "status"),
         Index("ix_orders_symbol_status", "symbol", "status"),
+        Index(
+            "ix_orders_pending_expiry",
+            "expires_at",
+            "created_at",
+            postgresql_where=text("status = 'PENDING'"),
+        ),
+        Index(
+            "ix_orders_pending_execution",
+            "created_at",
+            postgresql_where=text("status = 'PENDING' AND order_type = 'LIMIT'"),
+        ),
     )
 
     id: Mapped[int] = mapped_column(
