@@ -12,6 +12,11 @@ from app.trades.router import router as trade_router
 from app.trades.scheduler import shutdown_scheduler, start_scheduler
 from app.users.router import router as user_router
 
+from apisense import APISense, APISenseMiddleware
+from app.core.config import settings
+
+
+
 
 # logging.basicConfig(
 #     level=logging.INFO,
@@ -27,6 +32,15 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+
+apisense = APISense(
+    api_key=settings.APISENSE_API_KEY,
+    base_url=settings.APISENSE_BASE_URL,
+    environment=settings.APISENSE_ENVIRONMENT,
+    enabled=settings.APISENSE_ENABLED,
+)
+
+app.add_middleware(APISenseMiddleware, client=apisense)
 
 app.include_router(user_router, prefix="/users", tags=["Users"])
 app.include_router(trade_router)

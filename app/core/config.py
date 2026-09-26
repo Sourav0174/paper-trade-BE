@@ -11,6 +11,11 @@ class Settings(BaseSettings):
 
     # APP
     APP_BASE_URL: str
+    # APISENSE
+    APISENSE_API_KEY: str
+    APISENSE_BASE_URL: str
+    APISENSE_ENVIRONMENT: str
+    APISENSE_ENABLED: bool
 
     # EMAIL
     SMTP_HOST: str
@@ -26,6 +31,8 @@ class Settings(BaseSettings):
     TWILIO_ACCOUNT_SID: str
     TWILIO_AUTH_TOKEN: str
     TWILIO_VERIFY_SERVICE_SID: str
+
+
 
     class Config:
         env_file = ".env"
